@@ -13,6 +13,53 @@ DRIVE_FILE_ID = "12J0gKlKfRvztWnInHg9XvT8vRq5oLlfQ"
 EXCEL_LOCAL = "base_posventa.xlsx"
 
 # ==========================
+# ESTILO (layout dirección)
+# ==========================
+st.markdown("""
+<style>
+/* Reduce espacios verticales grandes */
+.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
+/* Sidebar un poco más prolijo */
+section[data-testid="stSidebar"] .block-container {padding-top: 1.2rem;}
+/* Títulos */
+h1 {margin-bottom: 0.2rem;}
+/* Tarjetas */
+.kpi-row {display:flex; gap:14px; flex-wrap:wrap; margin: 6px 0 10px 0;}
+.kpi-card {
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 10px rgba(0,0,0,0.04);
+  min-width: 240px;
+  flex: 1;
+}
+.kpi-title {font-size: 0.82rem; opacity: 0.72; margin-bottom: 6px;}
+.kpi-value {font-size: 1.55rem; font-weight: 700; line-height: 1.2;}
+.kpi-sub {font-size: 0.9rem; opacity: 0.78; margin-top: 6px;}
+.badge {
+  display:inline-block; padding: 6px 10px; border-radius: 999px;
+  font-size: 0.85rem; font-weight: 600; color: white;
+}
+.badge-red {background:#d64545;}
+.badge-yellow {background:#d1a100;}
+.badge-green {background:#2c9f6b;}
+.badge-gray {background:#6c757d;}
+/* Chips contadores */
+.chips {display:flex; gap:10px; flex-wrap:wrap; margin-top: 8px;}
+.chip {
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.hr {height:1px; background:rgba(0,0,0,0.08); margin: 16px 0;}
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================
 # Helpers
 # ==========================
 def parse_semana_num(x):
@@ -41,18 +88,21 @@ def estado_por_umbral(cumpl, umbral_amar, umbral_verde):
         return "Amarillo"
     return "Rojo"
 
-def chip_estado(estado):
-    if estado == "Verde": return "🟩 Verde"
-    if estado == "Amarillo": return "🟨 Amarillo"
-    if estado == "Rojo": return "🟥 Rojo"
-    return "—"
-
 def estado_global(serie_estados):
     s = set([x for x in serie_estados.dropna().tolist()])
     if "Rojo" in s: return "Rojo"
     if "Amarillo" in s: return "Amarillo"
     if "Verde" in s: return "Verde"
     return "—"
+
+def badge_html(estado):
+    if estado == "Rojo":
+        return '<span class="badge badge-red">ROJO</span>'
+    if estado == "Amarillo":
+        return '<span class="badge badge-yellow">AMARILLO</span>'
+    if estado == "Verde":
+        return '<span class="badge badge-green">VERDE</span>'
+    return '<span class="badge badge-gray">—</span>'
 
 # ==========================
 # Carga desde Google Sheets (export a XLSX)
@@ -86,15 +136,13 @@ def build_kpi_week(df):
 
     agg = df.groupby(["Semana_Num", "Sucursal", "KPI", "Tipo_KPI"], as_index=False).agg(
         Real_Sem=("Real_val", "sum"),
-        Obj_Sem=("Obj_val", "max"),       # evita duplicar objetivo
+        Obj_Sem=("Obj_val", "max"),
         Costo_Sem=("Costo_$", "sum"),
         Margen_Sem=("Margen_$", "sum"),
     )
 
-    # Semanal
     agg["Cumpl_Sem"] = agg["Real_Sem"] / agg["Obj_Sem"]
 
-    # Acumulado por sucursal + KPI
     agg = agg.sort_values(["Sucursal", "KPI", "Semana_Num"]).copy()
     agg["Real_Acum"] = agg.groupby(["Sucursal","KPI"])["Real_Sem"].cumsum()
     agg["Obj_Acum"]  = agg.groupby(["Sucursal","KPI"])["Obj_Sem"].cumsum()
@@ -155,7 +203,7 @@ else:
     df_last = aplicar_reglas(df_last, dim_kpi)
 
 # ==========================
-# VISUAL
+# Header
 # ==========================
 st.title("Tablero Posventa — Semanal + Acumulado")
 st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
@@ -169,7 +217,7 @@ with tab1:
     econ = df_last[df_last["Tipo_KPI"] == "$"].copy()
     oper = df_last[df_last["Tipo_KPI"] == "Q"].copy()
 
-    # (1) Consolidados correctos SUM/SUM
+    # Consolidados SUM/SUM
     econ_real = float(econ["Real_Acum"].sum()) if len(econ) else 0.0
     econ_obj  = float(econ["Obj_Acum"].sum())  if len(econ) else 0.0
     econ_cump = (econ_real / econ_obj) if econ_obj else None
@@ -181,7 +229,7 @@ with tab1:
     oper_obj  = float(oper["Obj_Acum"].sum())  if len(oper) else 0.0
     oper_cump = (oper_real / oper_obj) if oper_obj else None
 
-    # (2) Semáforo global + conteos
+    # Semáforo global + conteos
     econ_rojo = int((econ["Estado_Acum"] == "Rojo").sum()) if len(econ) else 0
     econ_amar = int((econ["Estado_Acum"] == "Amarillo").sum()) if len(econ) else 0
     econ_ver  = int((econ["Estado_Acum"] == "Verde").sum()) if len(econ) else 0
@@ -193,20 +241,51 @@ with tab1:
     glob_econ = estado_global(econ["Estado_Acum"]) if len(econ) else "—"
     glob_oper = estado_global(oper["Estado_Acum"]) if len(oper) else "—"
 
-    a,b,c,d = st.columns([1,1,1,1])
-    a.metric("Estado Global ($)", chip_estado(glob_econ))
-    b.metric("KPIs ($) por color", f"🟥{econ_rojo}  🟨{econ_amar}  🟩{econ_ver}")
-    c.metric("Estado Global (Q)", chip_estado(glob_oper))
-    d.metric("KPIs (Q) por color", f"🟥{oper_rojo}  🟨{oper_amar}  🟩{oper_ver}")
-    st.divider()
+    # Tarjetas superiores (sin emojis y sin cortes)
+    st.markdown(f"""
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-title">Estado Global ($)</div>
+        <div class="kpi-value">{badge_html(glob_econ)}</div>
+        <div class="chips">
+          <div class="chip">Rojos: <b>{econ_rojo}</b></div>
+          <div class="chip">Amarillos: <b>{econ_amar}</b></div>
+          <div class="chip">Verdes: <b>{econ_ver}</b></div>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Estado Global (Q)</div>
+        <div class="kpi-value">{badge_html(glob_oper)}</div>
+        <div class="chips">
+          <div class="chip">Rojos: <b>{oper_rojo}</b></div>
+          <div class="chip">Amarillos: <b>{oper_amar}</b></div>
+          <div class="chip">Verdes: <b>{oper_ver}</b></div>
+        </div>
+      </div>
+    </div>
+    <div class="hr"></div>
+    """, unsafe_allow_html=True)
 
     col1, col2 = st.columns(2, gap="large")
 
     with col1:
         st.subheader("🔵 Económico ($)")
-        st.metric("Cumplimiento Acumulado ($)", pct_fmt(econ_cump))
-        st.metric("Facturación Acumulada", money_fmt(econ_real))
-        st.metric("Margen % Acumulado", pct_fmt(econ_margen_pct))
+        st.markdown(f"""
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-title">Cumplimiento Acumulado ($)</div>
+            <div class="kpi-value">{pct_fmt(econ_cump)}</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-title">Facturación Acumulada</div>
+            <div class="kpi-value">{money_fmt(econ_real)}</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-title">Margen % Acumulado</div>
+            <div class="kpi-value">{pct_fmt(econ_margen_pct)}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if len(econ):
             fig = px.bar(
@@ -221,9 +300,22 @@ with tab1:
 
     with col2:
         st.subheader("🟢 Operativo (Q)")
-        st.metric("Cumplimiento Acumulado (Q)", pct_fmt(oper_cump))
-        st.metric("Real Acumulado (Q)", f"{oper_real:,.0f}".replace(",", "."))
-        st.metric("Objetivo Acumulado (Q)", f"{oper_obj:,.0f}".replace(",", "."))
+        st.markdown(f"""
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-title">Cumplimiento Acumulado (Q)</div>
+            <div class="kpi-value">{pct_fmt(oper_cump)}</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-title">Real Acumulado (Q)</div>
+            <div class="kpi-value">{f"{oper_real:,.0f}".replace(",", ".")}</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-title">Objetivo Acumulado (Q)</div>
+            <div class="kpi-value">{f"{oper_obj:,.0f}".replace(",", ".")}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if len(oper):
             fig2 = px.bar(
@@ -236,9 +328,9 @@ with tab1:
         else:
             st.info("No hay KPIs operativos (Q) en este corte.")
 
-    # (3) Heatmap KPI × Sucursal (solo TODAS)
+    # Heatmap KPI × Sucursal (solo TODAS)
     if sucursal == "TODAS (Consolidado)":
-        st.divider()
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.subheader("🔥 Heatmap KPI × Sucursal (Cumplimiento Acumulado)")
 
         heat = df_last_suc.pivot_table(
@@ -294,24 +386,22 @@ with tab3:
     g = df_last.copy()
     g["Gap"] = g["Obj_Acum"] - g["Real_Acum"]
 
-    # Orden: rojos primero, luego amarillos, luego verdes, y por gap descendente
     order_map = {"Rojo": 0, "Amarillo": 1, "Verde": 2, "—": 9}
     g["OrdenEstado"] = g["Estado_Acum"].map(order_map).fillna(9)
     g = g.sort_values(["OrdenEstado", "Gap"], ascending=[True, False])
-
-    g["Estado"] = g["Estado_Acum"].apply(chip_estado)
-    g["Cumpl_Acum"] = g["Cumpl_Acum"].apply(pct_fmt)
 
     def fmt_val(tipo, v):
         if pd.isna(v): return "—"
         return money_fmt(v) if tipo == "$" else f"{v:,.0f}".replace(",", ".")
 
+    g["Estado"] = g["Estado_Acum"].apply(lambda x: x)
+    g["Cumpl_Acum_fmt"] = g["Cumpl_Acum"].apply(pct_fmt)
     g["Real_Acum_fmt"] = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Real_Acum"]), axis=1)
     g["Obj_Acum_fmt"]  = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Obj_Acum"]), axis=1)
     g["Gap_fmt"]       = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Gap"]), axis=1)
 
     st.dataframe(
-        g[["KPI","Tipo_KPI","Estado","Cumpl_Acum","Real_Acum_fmt","Obj_Acum_fmt","Gap_fmt"]],
+        g[["KPI","Tipo_KPI","Estado","Cumpl_Acum_fmt","Real_Acum_fmt","Obj_Acum_fmt","Gap_fmt"]],
         use_container_width=True,
         hide_index=True
     )
