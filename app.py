@@ -146,4 +146,4 @@ df_last = aplicar_reglas(df_last, dim_kpi)
 # =========================================================
 # VISUAL
 # =========================================================
-st.title("Tabler
+st.title("Tablero Posventa — Semanal + Acumulado")
