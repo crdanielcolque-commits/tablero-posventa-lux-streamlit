@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -59,6 +60,29 @@ h1 {margin-bottom: 0.2rem;}
 # ==========================
 # Helpers
 # ==========================
+def _norm(s: str) -> str:
+    """Normaliza: minus, sin acentos, sin espacios, sin símbolos raros."""
+    s = str(s).strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    s = s.replace(" ", "").replace("-", "").replace(".", "").replace("/", "")
+    s = s.replace("__", "_")
+    return s
+
+def find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    """Devuelve el nombre real de la columna que matchea con algún candidato normalizado."""
+    norm_map = {_norm(c): c for c in df.columns}
+    for cand in candidates:
+        key = _norm(cand)
+        if key in norm_map:
+            return norm_map[key]
+    # match por contains (último recurso)
+    for cand in candidates:
+        key = _norm(cand)
+        for k, real in norm_map.items():
+            if key in k:
+                return real
+    return None
+
 def parse_semana_num(x):
     if pd.isna(x):
         return None
@@ -109,35 +133,104 @@ def load_from_drive():
     url = f"https://docs.google.com/spreadsheets/d/{DRIVE_FILE_ID}/export?format=xlsx"
     gdown.download(url, EXCEL_LOCAL, quiet=True, fuzzy=True)
 
-    # Si cambiaste nombres de hojas, ajustá acá (ver nota al final)
-    df = pd.read_excel(EXCEL_LOCAL, sheet_name="BASE_INPUT")
-    dim_kpi = pd.read_excel(EXCEL_LOCAL, sheet_name="DIM_KPI")
+    # Si el archivo nuevo cambió nombres de hojas, ajustá acá:
+    df = pd.read_excel(EXCEL_LOCAL, sheet_name=0)  # primera hoja (más robusto)
+    try:
+        dim_kpi = pd.read_excel(EXCEL_LOCAL, sheet_name="DIM_KPI")
+    except Exception:
+        # si no existe DIM_KPI, creamos uno mínimo (umbrales por defecto)
+        dim_kpi = pd.DataFrame(columns=["KPI", "Umbral_Amarillo", "Umbral_Verde"])
 
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    df["Semana_Num"] = df["Semana"].apply(parse_semana_num)
-
-    if "Umbral_Amarillo" not in dim_kpi.columns:
-        dim_kpi["Umbral_Amarillo"] = 0.90
-    if "Umbral_Verde" not in dim_kpi.columns:
-        dim_kpi["Umbral_Verde"] = 1.00
+    # Normaliza headers (solo strip)
+    df.columns = [str(c).strip() for c in df.columns]
+    dim_kpi.columns = [str(c).strip() for c in dim_kpi.columns]
 
     return df, dim_kpi
 
 # ==========================
+# Resolver columnas del Excel nuevo
+# ==========================
+def resolve_schema(df: pd.DataFrame) -> dict:
+    col = {}
+
+    col["fecha"] = find_col(df, ["Fecha", "FECHA", "date"])
+    col["semana"] = find_col(df, ["Semana", "SEMANA", "Semana corte", "Semana_Corte"])
+    col["sucursal"] = find_col(df, ["Sucursal", "SUCURSAL", "Sede", "Localidad"])
+    col["kpi"] = find_col(df, ["KPI", "Indicador", "Indicador_KPI"])
+    col["tipo_kpi"] = find_col(df, ["Tipo_KPI", "Tipo KPI", "Tipo", "TipoIndicador", "Tipo_Indicador"])
+
+    # Real y Objetivo (money y qty)
+    col["real_$"] = find_col(df, ["Real_$", "Real $", "Real$", "Real_ARS", "Real_Ars", "Real_Pesos", "Real_Monto"])
+    col["obj_$"]  = find_col(df, ["Objetivo_$", "Objetivo $", "Objetivo$", "Obj_$", "Obj $", "Objetivo_ARS", "Objetivo_Monto"])
+
+    col["real_q"] = find_col(df, ["Real_Q", "Real Q", "Real_Unidades", "Real_UD", "Real_Cant", "Real_Cantidad"])
+    col["obj_q"]  = find_col(df, ["Objetivo_Q", "Objetivo Q", "Obj_Q", "Objetivo_Unidades", "Objetivo_Cant", "Objetivo_Cantidad"])
+
+    col["costo_$"]  = find_col(df, ["Costo_$", "Costo $", "Costo$", "Costo_Monto"])
+    col["margen_$"] = find_col(df, ["Margen_$", "Margen $", "Margen$", "Margen_Monto"])
+
+    missing = [k for k,v in col.items() if v is None and k in ["semana","sucursal","kpi","tipo_kpi","real_$","obj_$","real_q","obj_q","costo_$","margen_$"]]
+    if missing:
+        return {"ok": False, "missing": missing, "found_cols": list(df.columns), "col": col}
+    return {"ok": True, "col": col}
+
+# ==========================
+# DIM KPI (umbrales)
+# ==========================
+def normalize_dim_kpi(dim_kpi: pd.DataFrame) -> pd.DataFrame:
+    if dim_kpi is None or len(dim_kpi) == 0:
+        return pd.DataFrame(columns=["KPI","Umbral_Amarillo","Umbral_Verde"])
+
+    kpi_col = find_col(dim_kpi, ["KPI","Indicador","Indicador_KPI"])
+    ua_col  = find_col(dim_kpi, ["Umbral_Amarillo","Umbral Amarillo","Amarillo"])
+    uv_col  = find_col(dim_kpi, ["Umbral_Verde","Umbral Verde","Verde"])
+
+    out = pd.DataFrame()
+    out["KPI"] = dim_kpi[kpi_col] if kpi_col else None
+    out["Umbral_Amarillo"] = dim_kpi[ua_col] if ua_col else 0.90
+    out["Umbral_Verde"] = dim_kpi[uv_col] if uv_col else 1.00
+    out["Umbral_Amarillo"] = pd.to_numeric(out["Umbral_Amarillo"], errors="coerce").fillna(0.90)
+    out["Umbral_Verde"] = pd.to_numeric(out["Umbral_Verde"], errors="coerce").fillna(1.00)
+    out = out.dropna(subset=["KPI"]).copy()
+    return out
+
+# ==========================
 # Transformaciones
 # ==========================
-def build_kpi_week(df):
-    df = df.copy()
+def build_kpi_week(df_raw: pd.DataFrame, schema: dict) -> pd.DataFrame:
+    c = schema["col"]
+    df = df_raw.copy()
 
-    df["Real_val"] = df.apply(lambda r: r["Real_$"] if r["Tipo_KPI"] == "$" else r["Real_Q"], axis=1)
-    df["Obj_val"]  = df.apply(lambda r: r["Objetivo_$"] if r["Tipo_KPI"] == "$" else r["Objetivo_Q"], axis=1)
+    # Fecha (si existe)
+    if c["fecha"]:
+        df[c["fecha"]] = pd.to_datetime(df[c["fecha"]], errors="coerce")
 
-    agg = df.groupby(["Semana_Num", "Sucursal", "KPI", "Tipo_KPI"], as_index=False).agg(
+    df["Semana_Num"] = df[c["semana"]].apply(parse_semana_num)
+
+    # Asegurar tipos numéricos
+    for k in ["real_$","obj_$","real_q","obj_q","costo_$","margen_$"]:
+        df[c[k]] = pd.to_numeric(df[c[k]], errors="coerce")
+
+    # Valores unificados
+    df["Real_val"] = df.apply(lambda r: r[c["real_$"]] if r[c["tipo_kpi"]] == "$" else r[c["real_q"]], axis=1)
+    df["Obj_val"]  = df.apply(lambda r: r[c["obj_$"]]  if r[c["tipo_kpi"]] == "$" else r[c["obj_q"]], axis=1)
+
+    agg = df.groupby(
+        ["Semana_Num", c["sucursal"], c["kpi"], c["tipo_kpi"]],
+        as_index=False
+    ).agg(
         Real_Sem=("Real_val", "sum"),
         Obj_Sem=("Obj_val", "max"),
-        Costo_Sem=("Costo_$", "sum"),
-        Margen_Sem=("Margen_$", "sum"),
+        Costo_Sem=(c["costo_$"], "sum"),
+        Margen_Sem=(c["margen_$"], "sum"),
     )
+
+    # Renombres a estándar
+    agg = agg.rename(columns={
+        c["sucursal"]: "Sucursal",
+        c["kpi"]: "KPI",
+        c["tipo_kpi"]: "Tipo_KPI",
+    })
 
     agg["Cumpl_Sem"] = agg["Real_Sem"] / agg["Obj_Sem"]
 
@@ -178,8 +271,19 @@ def consolidar_todas(df_last_suc):
 # ==========================
 # App
 # ==========================
-df_base, dim_kpi = load_from_drive()
-df_week = build_kpi_week(df_base)
+df_raw, dim_kpi_raw = load_from_drive()
+schema = resolve_schema(df_raw)
+
+if not schema["ok"]:
+    st.error("⚠️ El archivo nuevo cambió nombres de columnas y faltan campos necesarios.")
+    st.write("**Faltan (claves):**", schema["missing"])
+    st.write("**Columnas encontradas en tu hoja:**")
+    st.code("\n".join(schema["found_cols"]))
+    st.stop()
+
+dim_kpi = normalize_dim_kpi(dim_kpi_raw)
+
+df_week = build_kpi_week(df_raw, schema)
 
 # Sidebar filtros
 st.sidebar.title("Filtros obligatorios")
