@@ -7,9 +7,9 @@ import gdown
 st.set_page_config(page_title="Tablero Posventa", layout="wide")
 
 # ==========================
-# CONFIG DRIVE
+# CONFIG DRIVE (ACTUALIZADO)
 # ==========================
-DRIVE_FILE_ID = "12J0gKlKfRvztWnInHg9XvT8vRq5oLlfQ"
+DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"
 EXCEL_LOCAL = "base_posventa.xlsx"
 
 # ==========================
@@ -17,13 +17,10 @@ EXCEL_LOCAL = "base_posventa.xlsx"
 # ==========================
 st.markdown("""
 <style>
-/* Reduce espacios verticales grandes */
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-/* Sidebar un poco más prolijo */
 section[data-testid="stSidebar"] .block-container {padding-top: 1.2rem;}
-/* Títulos */
 h1 {margin-bottom: 0.2rem;}
-/* Tarjetas */
+
 .kpi-row {display:flex; gap:14px; flex-wrap:wrap; margin: 6px 0 10px 0;}
 .kpi-card {
   background: #ffffff;
@@ -36,7 +33,6 @@ h1 {margin-bottom: 0.2rem;}
 }
 .kpi-title {font-size: 0.82rem; opacity: 0.72; margin-bottom: 6px;}
 .kpi-value {font-size: 1.55rem; font-weight: 700; line-height: 1.2;}
-.kpi-sub {font-size: 0.9rem; opacity: 0.78; margin-top: 6px;}
 .badge {
   display:inline-block; padding: 6px 10px; border-radius: 999px;
   font-size: 0.85rem; font-weight: 600; color: white;
@@ -45,7 +41,7 @@ h1 {margin-bottom: 0.2rem;}
 .badge-yellow {background:#d1a100;}
 .badge-green {background:#2c9f6b;}
 .badge-gray {background:#6c757d;}
-/* Chips contadores */
+
 .chips {display:flex; gap:10px; flex-wrap:wrap; margin-top: 8px;}
 .chip {
   background: rgba(0,0,0,0.04);
@@ -55,6 +51,7 @@ h1 {margin-bottom: 0.2rem;}
   font-size: 0.9rem;
   white-space: nowrap;
 }
+
 .hr {height:1px; background:rgba(0,0,0,0.08); margin: 16px 0;}
 </style>
 """, unsafe_allow_html=True)
@@ -112,6 +109,7 @@ def load_from_drive():
     url = f"https://docs.google.com/spreadsheets/d/{DRIVE_FILE_ID}/export?format=xlsx"
     gdown.download(url, EXCEL_LOCAL, quiet=True, fuzzy=True)
 
+    # Si cambiaste nombres de hojas, ajustá acá (ver nota al final)
     df = pd.read_excel(EXCEL_LOCAL, sheet_name="BASE_INPUT")
     dim_kpi = pd.read_excel(EXCEL_LOCAL, sheet_name="DIM_KPI")
 
@@ -241,7 +239,6 @@ with tab1:
     glob_econ = estado_global(econ["Estado_Acum"]) if len(econ) else "—"
     glob_oper = estado_global(oper["Estado_Acum"]) if len(oper) else "—"
 
-    # Tarjetas superiores (sin emojis y sin cortes)
     st.markdown(f"""
     <div class="kpi-row">
       <div class="kpi-card">
@@ -328,7 +325,6 @@ with tab1:
         else:
             st.info("No hay KPIs operativos (Q) en este corte.")
 
-    # Heatmap KPI × Sucursal (solo TODAS)
     if sucursal == "TODAS (Consolidado)":
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.subheader("🔥 Heatmap KPI × Sucursal (Cumplimiento Acumulado)")
@@ -394,14 +390,13 @@ with tab3:
         if pd.isna(v): return "—"
         return money_fmt(v) if tipo == "$" else f"{v:,.0f}".replace(",", ".")
 
-    g["Estado"] = g["Estado_Acum"].apply(lambda x: x)
     g["Cumpl_Acum_fmt"] = g["Cumpl_Acum"].apply(pct_fmt)
     g["Real_Acum_fmt"] = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Real_Acum"]), axis=1)
     g["Obj_Acum_fmt"]  = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Obj_Acum"]), axis=1)
     g["Gap_fmt"]       = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Gap"]), axis=1)
 
     st.dataframe(
-        g[["KPI","Tipo_KPI","Estado","Cumpl_Acum_fmt","Real_Acum_fmt","Obj_Acum_fmt","Gap_fmt"]],
+        g[["KPI","Tipo_KPI","Estado_Acum","Cumpl_Acum_fmt","Real_Acum_fmt","Obj_Acum_fmt","Gap_fmt"]],
         use_container_width=True,
         hide_index=True
     )
