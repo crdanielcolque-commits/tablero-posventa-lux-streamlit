@@ -1,7 +1,6 @@
 # ============================================================
-# TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.2
-# Robusto: Obj=0, filtros P&L por aperturas, ranking + labels,
-# 3 tabs (P&L / KPIs resto / Gestión)
+# TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.2.1
+# FIX CRÍTICO: parse de números AR (coma decimal / $ / miles)
 # ============================================================
 
 import numpy as np
@@ -15,7 +14,7 @@ import gdown
 # ---------------------------
 st.set_page_config(page_title="Tablero Posventa", layout="wide")
 
-DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"  # <- tu Google Sheet ID
+DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"
 EXCEL_LOCAL = "base_posventa.xlsx"
 
 # ---------------------------
@@ -27,11 +26,48 @@ def parse_semana_num(series: pd.Series) -> pd.Series:
     num = s.str.extract(r"(\d+(?:[.,]\d+)?)")[0]
     num = num.str.replace(",", ".", regex=False)
     numf = pd.to_numeric(num, errors="coerce")
-    numi = np.floor(numf).astype("Int64")
-    return numi
+    return np.floor(numf).astype("Int64")
 
-def to_num(s):
-    return pd.to_numeric(s, errors="coerce")
+def to_num_ar(x):
+    """
+    Convierte números en formato AR a float:
+    - $ 1.234.567,89  -> 1234567.89
+    - 9808131,76      -> 9808131.76
+    - 0.00 / $0.00    -> 0.0
+    - 30,64% / 30.64% -> 0.3064 (si viene con %)
+    """
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return np.nan
+    s = str(x).strip()
+    if s == "" or s.lower() in {"nan", "none"}:
+        return np.nan
+
+    is_pct = "%" in s
+    s = s.replace("%", "")
+
+    # quitar símbolos y espacios comunes
+    s = (
+        s.replace("$", "")
+         .replace("AR$", "")
+         .replace(" ", "")
+         .replace("\u00A0", "")
+    )
+
+    # normalizar separadores:
+    # si hay coma, asumimos coma decimal y punto miles
+    # 1.234.567,89 -> 1234567.89
+    if "," in s:
+        s = s.replace(".", "")
+        s = s.replace(",", ".")
+    # si no hay coma, puede venir ya en formato punto decimal (ok)
+
+    try:
+        v = float(s)
+        if is_pct:
+            v = v / 100.0
+        return v
+    except Exception:
+        return np.nan
 
 def safe_ratio(n, d):
     try:
@@ -74,35 +110,12 @@ def estado(c):
         return "Amarillo"
     return "Rojo"
 
-def chip_html(text):
-    # Verde suave (no alerta)
-    return f"""
-    <span style="
-        display:inline-block;
-        padding:6px 10px;
-        border-radius:12px;
-        background:#DFF3E6;
-        color:#0F5132;
-        font-weight:600;
-        font-size:12px;
-        border:1px solid #BFE6CF;">
-        {text}
-    </span>
-    """
-
 def badge_estado_html(est):
     color = {"Verde":"#198754", "Amarillo":"#d39e00", "Rojo":"#dc3545", "—":"#6c757d"}.get(est, "#6c757d")
     bg    = {"Verde":"#d1e7dd", "Amarillo":"#fff3cd", "Rojo":"#f8d7da", "—":"#e9ecef"}.get(est, "#e9ecef")
     return f"""
-    <span style="
-        display:inline-block;
-        padding:4px 10px;
-        border-radius:999px;
-        background:{bg};
-        color:{color};
-        font-weight:700;
-        font-size:12px;
-        border:1px solid {color}33;">
+    <span style="display:inline-block;padding:4px 10px;border-radius:999px;
+                 background:{bg};color:{color};font-weight:700;font-size:12px;border:1px solid {color}33;">
         {est.upper()}
     </span>
     """
@@ -112,13 +125,9 @@ def card_html(title, value, sub, estado_txt=None):
     if estado_txt is not None:
         estado_block = f"<div style='margin-top:8px;'>{badge_estado_html(estado_txt)}</div>"
     return f"""
-    <div style="
-        border:1px solid #eee;
-        border-radius:14px;
-        padding:16px 16px;
-        background:#fff;
-        box-shadow:0 2px 10px rgba(0,0,0,0.04);">
-        <div style="font-size:12px;color:#6c757d;font-weight:700;letter-spacing:.2px;">{title}</div>
+    <div style="border:1px solid #eee;border-radius:14px;padding:16px;background:#fff;
+                box-shadow:0 2px 10px rgba(0,0,0,0.04);">
+        <div style="font-size:12px;color:#6c757d;font-weight:700;">{title}</div>
         <div style="font-size:28px;font-weight:800;margin-top:6px;">{value}</div>
         <div style="font-size:12px;color:#6c757d;margin-top:6px;">{sub}</div>
         {estado_block}
@@ -139,7 +148,7 @@ def load_from_drive():
 df = load_from_drive()
 
 # ---------------------------
-# VALIDACIÓN MÍNIMA
+# VALIDACIÓN
 # ---------------------------
 required = [
     "Fecha","Semana","Sucursal","KPI","Categoria_KPI","Tipo_KPI",
@@ -157,16 +166,17 @@ if missing:
 df["Semana_Num"] = parse_semana_num(df["Semana"])
 df = df[~df["Semana_Num"].isna()].copy()
 
-# Numerización
+# Parse AR numérico (CRÍTICO)
 for c in ["Real_$","Costo_$","Margen_$","Margen_%","Real_Q","Objetivo_$","Objetivo_Q","Cumplimiento_%"]:
     if c in df.columns:
-        df[c] = to_num(df[c])
+        df[c] = df[c].apply(to_num_ar)
 
+# Limpieza strings
 df["KPI"] = df["KPI"].astype(str).str.strip()
 df["Categoria_KPI"] = df["Categoria_KPI"].astype(str).str.strip()
 df["Tipo_KPI"] = df["Tipo_KPI"].astype(str).str.strip()
 
-# Para cálculos: definimos columnas "Real_val" y "Obj_val" según Tipo_KPI
+# Calcular Real/Obj según Tipo
 def build_real_obj(row):
     if row["Tipo_KPI"] == "$":
         return row["Real_$"], row["Objetivo_$"]
@@ -174,14 +184,12 @@ def build_real_obj(row):
         return row["Real_Q"], row["Objetivo_Q"]
 
 tmp = df.apply(build_real_obj, axis=1, result_type="expand")
-df["Real_val"] = to_num(tmp[0]).fillna(0.0)
-df["Obj_val"]  = to_num(tmp[1]).fillna(0.0)
-
-# Cumplimiento calculado robusto
+df["Real_val"] = pd.to_numeric(tmp[0], errors="coerce").fillna(0.0)
+df["Obj_val"]  = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
 df["Cumpl_calc"] = df.apply(lambda r: safe_ratio(r["Real_val"], r["Obj_val"]), axis=1)
 
 # ---------------------------
-# SIDEBAR (obligatorio)
+# SIDEBAR
 # ---------------------------
 st.sidebar.markdown("## Filtros obligatorios")
 
@@ -195,25 +203,25 @@ sucursales = sorted(df["Sucursal"].dropna().unique().tolist())
 sucursal = st.sidebar.selectbox("Sucursal", ["TODAS (Consolidado)"] + sucursales)
 
 st.sidebar.markdown("---")
-
-# Corte semanal acumulado
-df_cut = df[df["Semana_Num"] <= semana_corte].copy()
-
-# Filtro sucursal
-if sucursal != "TODAS (Consolidado)":
-    df_cut = df_cut[df_cut["Sucursal"] == sucursal].copy()
-
-# Filtro: incluir/excluir filas Obj=0
 st.sidebar.markdown("### Cálculo")
 show_obj0 = st.sidebar.checkbox("Incluir filas con Obj=0 (puede distorsionar %)", value=False)
 
+# Corte
+df_cut = df[df["Semana_Num"] <= semana_corte].copy()
+if sucursal != "TODAS (Consolidado)":
+    df_cut = df_cut[df_cut["Sucursal"] == sucursal].copy()
+
+def apply_obj0_filter(d):
+    if show_obj0:
+        return d.copy()
+    return d[d["Obj_val"] > 0].copy()
+
 # ---------------------------
-# Filtros P&L (aperturas incluidas)
+# Filtros P&L aperturas
 # ---------------------------
 st.sidebar.markdown("---")
 st.sidebar.markdown("## Incluir variables (P&L)")
 
-# Aperturas Repuestos y Servicios (Tipo $)
 rep_open = sorted(df_cut[(df_cut["KPI"].str.upper()=="REPUESTOS") & (df_cut["Tipo_KPI"]=="$")]["Categoria_KPI"].unique().tolist())
 srv_open = sorted(df_cut[(df_cut["KPI"].str.upper()=="SERVICIOS") & (df_cut["Tipo_KPI"]=="$")]["Categoria_KPI"].unique().tolist())
 
@@ -221,7 +229,7 @@ rep_sel = st.sidebar.multiselect("Repuestos: aperturas incluidas", rep_open, def
 srv_sel = st.sidebar.multiselect("Servicios: aperturas incluidas", srv_open, default=srv_open)
 
 # ---------------------------
-# TAB LAYOUT
+# UI
 # ---------------------------
 st.title("Tablero Posventa — Macro → Micro (Semanal + Acumulado)")
 st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
@@ -229,251 +237,80 @@ st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
 tab1, tab2, tab3 = st.tabs(["🧩 P&L (Repuestos vs Servicios)", "📌 KPIs (resto)", "🧪 Gestión (desvíos)"])
 
 # ============================================================
-# UTIL: agregaciones
-# ============================================================
-def apply_obj0_filter(d):
-    if show_obj0:
-        return d.copy()
-    return d[d["Obj_val"] > 0].copy()
-
-def agg_segment(d, kpi_name, tipo):
-    x = d[(d["KPI"].str.upper()==kpi_name.upper()) & (d["Tipo_KPI"]==tipo)].copy()
-    x = apply_obj0_filter(x)
-    real = x["Real_val"].sum()
-    obj  = x["Obj_val"].sum()
-    c    = safe_ratio(real, obj)
-    return real, obj, c, x
-
-def barh_rank(df_rank, x, y, title, label_mode="pct"):
-    if df_rank.empty:
-        st.info("Sin datos para mostrar.")
-        return
-    fig = px.bar(df_rank, x=x, y=y, orientation="h", text="label")
-    fig.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10), title=title)
-    fig.update_traces(textposition="inside")
-    st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================
-# TAB 1 — P&L Macro → Micro
+# TAB 1 — P&L
 # ============================================================
 with tab1:
     st.markdown("## 🧩 P&L — Macro → Micro")
-    st.markdown(
-        "<div style='color:#6c757d'>Primero lo macro (Repuestos / Servicios). Después el micro (aperturas y ranking por sucursal).</div>",
-        unsafe_allow_html=True
-    )
     st.markdown("---")
 
-    # Datos P&L filtrados por aperturas seleccionadas
-    d_pl = df_cut[(df_cut["Tipo_KPI"]=="$")].copy()
+    d_pl = df_cut[df_cut["Tipo_KPI"]=="$"].copy()
 
     d_rep = d_pl[d_pl["KPI"].str.upper()=="REPUESTOS"].copy()
     d_rep = d_rep[d_rep["Categoria_KPI"].isin(rep_sel)].copy()
+    d_rep = apply_obj0_filter(d_rep)
 
     d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
+    d_srv = apply_obj0_filter(d_srv)
 
-    # Macro cards
-    rep_real, rep_obj, rep_c, rep_df = agg_segment(d_rep, "REPUESTOS", "$")
-    srv_real, srv_obj, srv_c, srv_df = agg_segment(d_srv, "SERVICIOS", "$")
+    def macro_cards(d, title):
+        real = d["Real_val"].sum()
+        obj  = d["Obj_val"].sum()
+        c    = safe_ratio(real, obj)
+        st.markdown(
+            card_html("Cumplimiento (Acum.)", pct(c), f"Real {money(real)} | Obj {money(obj)}", estado(c)),
+            unsafe_allow_html=True
+        )
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
-        st.markdown(
-            card_html(
-                "Cumplimiento (Acum.)",
-                pct(rep_c),
-                f"Real {money(rep_real)} | Obj {money(rep_obj)}",
-                estado(rep_c)
-            ),
-            unsafe_allow_html=True
-        )
+        macro_cards(d_rep, "REPUESTOS")
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
-        st.markdown(
-            card_html(
-                "Cumplimiento (Acum.)",
-                pct(srv_c),
-                f"Real {money(srv_real)} | Obj {money(srv_obj)}",
-                estado(srv_c)
-            ),
-            unsafe_allow_html=True
-        )
+        macro_cards(d_srv, "SERVICIOS")
 
     st.markdown("---")
     st.markdown("### Aperturas — micro (cumplimiento acumulado)")
 
-    # Micro aperturas (Repuestos / Servicios)
-    def micro_by_open(d, kpi_upper):
-        m = d[d["KPI"].str.upper()==kpi_upper].copy()
-        m = apply_obj0_filter(m)
-        g = m.groupby(["Categoria_KPI"], as_index=False).agg(
+    def micro_aperturas(d):
+        g = d.groupby("Categoria_KPI", as_index=False).agg(
             Real=("Real_val","sum"),
             Obj=("Obj_val","sum")
         )
         g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+        g = g[~g["Cumpl"].isna()].sort_values("Cumpl", ascending=False)
         g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-        g = g.sort_values("Cumpl", ascending=False)
         return g
 
-    left, right = st.columns(2)
-    with left:
+    l, r = st.columns(2)
+    with l:
         st.markdown("**Repuestos — por apertura**")
-        g_rep = micro_by_open(d_rep, "REPUESTOS")
-        if g_rep.empty:
+        g = micro_aperturas(d_rep)
+        if g.empty:
             st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
         else:
-            fig = px.bar(g_rep, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
+            fig = px.bar(g, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
             fig.update_traces(textposition="inside")
             st.plotly_chart(fig, use_container_width=True)
 
-    with right:
+    with r:
         st.markdown("**Servicios — por apertura**")
-        g_srv = micro_by_open(d_srv, "SERVICIOS")
-        if g_srv.empty:
+        g = micro_aperturas(d_srv)
+        if g.empty:
             st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
         else:
-            fig = px.bar(g_srv, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
+            fig = px.bar(g, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
             fig.update_traces(textposition="inside")
             st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("## 🎯 Micro — ranking sucursal + apertura")
-
-    topn = st.selectbox("Top N", [5,10,15,20], index=1)
-    show_obj0_rank = st.checkbox("Mostrar 0% (obj>0 y real=0)", value=True)
-
-    def micro_sucursal_apertura(d, kpi_upper, aperturas_sel):
-        x = d[(d["KPI"].str.upper()==kpi_upper) & (d["Tipo_KPI"]=="$")].copy()
-        x = x[x["Categoria_KPI"].isin(aperturas_sel)].copy()
-        x = apply_obj0_filter(x)
-
-        g = x.groupby(["Sucursal","Categoria_KPI"], as_index=False).agg(
-            Real=("Real_val","sum"),
-            Obj=("Obj_val","sum")
-        )
-        g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-
-        # limpiar NaN
-        g = g[~g["Cumpl"].isna()].copy()
-
-        # si no quiere ver 0% (cuando Obj>0 y Real=0)
-        if not show_obj0_rank:
-            g = g[~((g["Obj"]>0) & (g["Real"]==0))].copy()
-
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-        g["key"] = g["Sucursal"].astype(str) + " — " + g["Categoria_KPI"].astype(str)
-        g = g.sort_values("Cumpl", ascending=False).head(topn)
-        return g
-
-    l2, r2 = st.columns(2)
-    with l2:
-        rep_pick = st.selectbox("Repuestos (micro)", ["Todas las aperturas"] + rep_sel)
-        rep_use = rep_sel if rep_pick == "Todas las aperturas" else [rep_pick]
-        g = micro_sucursal_apertura(df_cut, "REPUESTOS", rep_use)
-        st.markdown("**Repuestos — sucursal + apertura (micro)**")
-        if g.empty:
-            st.info("Sin datos para este ranking.")
-        else:
-            fig = px.bar(g, x="Cumpl", y="key", orientation="h", text="label")
-            fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10))
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with r2:
-        srv_pick = st.selectbox("Servicios (micro)", ["Todas las aperturas"] + srv_sel)
-        srv_use = srv_sel if srv_pick == "Todas las aperturas" else [srv_pick]
-        g = micro_sucursal_apertura(df_cut, "SERVICIOS", srv_use)
-        st.markdown("**Servicios — sucursal + apertura (micro)**")
-        if g.empty:
-            st.info("Sin datos para este ranking.")
-        else:
-            fig = px.bar(g, x="Cumpl", y="key", orientation="h", text="label")
-            fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10))
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("## 🏁 Ranking por sucursal (macro) + micro por apertura")
-
-    def rank_sucursal_macro(d, kpi_upper):
-        x = d[(d["KPI"].str.upper()==kpi_upper) & (d["Tipo_KPI"]=="$")].copy()
-        x = apply_obj0_filter(x)
-        g = x.groupby(["Sucursal"], as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
-        g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-        g = g[~g["Cumpl"].isna()].copy()
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-        g = g.sort_values("Cumpl", ascending=False)
-        return g
-
-    l3, r3 = st.columns(2)
-    with l3:
-        st.markdown("**Repuestos — por sucursal (macro)**")
-        rk = rank_sucursal_macro(d_rep, "REPUESTOS")
-        if rk.empty:
-            st.info("Sin datos para ranking.")
-        else:
-            fig = px.bar(rk, x="Cumpl", y="Sucursal", orientation="h", text="label")
-            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # micro: apertura dentro de sucursal (repuestos)
-            suc_pick = st.selectbox("Ver micro de Repuestos para sucursal:", ["(elegir)"] + rk["Sucursal"].tolist())
-            if suc_pick != "(elegir)":
-                micro = d_rep[(d_rep["Sucursal"]==suc_pick) & (d_rep["KPI"].str.upper()=="REPUESTOS")].copy()
-                micro = apply_obj0_filter(micro)
-                g = micro.groupby("Categoria_KPI", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
-                g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-                g = g[~g["Cumpl"].isna()].sort_values("Cumpl", ascending=False)
-                g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-                st.markdown("**Micro (aperturas) — Repuestos**")
-                if g.empty:
-                    st.info("Sin micro (Obj=0 o sin datos).")
-                else:
-                    fig = px.bar(g, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
-                    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
-                    fig.update_traces(textposition="inside")
-                    st.plotly_chart(fig, use_container_width=True)
-
-    with r3:
-        st.markdown("**Servicios — por sucursal (macro)**")
-        rk = rank_sucursal_macro(d_srv, "SERVICIOS")
-        if rk.empty:
-            st.info("Sin datos para ranking.")
-        else:
-            fig = px.bar(rk, x="Cumpl", y="Sucursal", orientation="h", text="label")
-            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # micro: apertura dentro de sucursal (servicios)
-            suc_pick = st.selectbox("Ver micro de Servicios para sucursal:", ["(elegir)"] + rk["Sucursal"].tolist(), key="srv_micro_pick")
-            if suc_pick != "(elegir)":
-                micro = d_srv[(d_srv["Sucursal"]==suc_pick) & (d_srv["KPI"].str.upper()=="SERVICIOS")].copy()
-                micro = apply_obj0_filter(micro)
-                g = micro.groupby("Categoria_KPI", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
-                g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-                g = g[~g["Cumpl"].isna()].sort_values("Cumpl", ascending=False)
-                g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-                st.markdown("**Micro (aperturas) — Servicios**")
-                if g.empty:
-                    st.info("Sin micro (Obj=0 o sin datos).")
-                else:
-                    fig = px.bar(g, x="Cumpl", y="Categoria_KPI", orientation="h", text="label")
-                    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
-                    fig.update_traces(textposition="inside")
-                    st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# TAB 2 — KPIs resto (no Repuestos/Servicios)
+# TAB 2 — KPIs resto
 # ============================================================
 with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
-    st.markdown("<div style='color:#6c757d'>KPIs que no son Repuestos/Servicios (ej: Accesorios, Neumáticos, Campañas, CPUS, etc.).</div>", unsafe_allow_html=True)
     st.markdown("---")
 
     resto = df_cut[~df_cut["KPI"].str.upper().isin(["REPUESTOS","SERVICIOS"])].copy()
@@ -486,26 +323,24 @@ with tab2:
         kpi_sel = st.selectbox("Elegí un KPI (resto)", kpis_resto)
 
         x = resto[resto["KPI"]==kpi_sel].copy()
-
-        # Macro KPI seleccionado (según Tipo: si hay mezclas, mostramos separado)
         tipos = sorted(x["Tipo_KPI"].unique().tolist())
+
         for t in tipos:
             xt = x[x["Tipo_KPI"]==t].copy()
             real = xt["Real_val"].sum()
             obj  = xt["Obj_val"].sum()
             c    = safe_ratio(real, obj)
-            est  = estado(c)
+
             st.markdown(
                 card_html(
                     f"{kpi_sel} ({t}) — Cumplimiento (Acum.)",
                     pct(c),
-                    f"Real {money(real) if t=='$' else qty(real)} | Obj {money(obj) if t=='$' else qty(obj)}",
-                    est
+                    f"Real {(money(real) if t=='$' else qty(real))} | Obj {(money(obj) if t=='$' else qty(obj))}",
+                    estado(c)
                 ),
                 unsafe_allow_html=True
             )
 
-            # Ranking por sucursal para ese KPI
             g = xt.groupby("Sucursal", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
             g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
             g = g[~g["Cumpl"].isna()].sort_values("Cumpl", ascending=False)
@@ -524,14 +359,12 @@ with tab2:
                 st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# TAB 3 — Gestión (desvíos) + filtro sucursal interno
+# TAB 3 — Gestión
 # ============================================================
 with tab3:
     st.markdown("## 🧪 Gestión (desvíos)")
-    st.markdown("<div style='color:#6c757d'>Vista de control: dónde está el gap (Obj-Real) y qué lo explica.</div>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # Filtro sucursal dentro de Gestión (pedido tuyo)
     suc_g = st.selectbox("Sucursal (Gestión)", ["TODAS (Consolidado)"] + sucursales, index=0)
 
     d = df[df["Semana_Num"] <= semana_corte].copy()
@@ -540,7 +373,6 @@ with tab3:
 
     d = apply_obj0_filter(d)
 
-    # Gap por KPI + Categoria
     g = d.groupby(["KPI","Categoria_KPI","Tipo_KPI"], as_index=False).agg(
         Real=("Real_val","sum"),
         Obj=("Obj_val","sum")
@@ -555,11 +387,8 @@ with tab3:
     else:
         show_n = st.selectbox("Top N desvíos", [10,20,30,50], index=1)
         gg = g.head(show_n).copy()
-        gg["label"] = gg.apply(
-            lambda r: f"Gap {money(r['Gap']) if r['Tipo_KPI']=='$' else qty(r['Gap'])} | {pct(r['Cumpl'])}",
-            axis=1
-        )
-        gg["key"] = gg["KPI"].astype(str) + " — " + gg["Categoria_KPI"].astype(str) + f" ({gg['Tipo_KPI']})"
+        gg["key"] = gg["KPI"].astype(str) + " — " + gg["Categoria_KPI"].astype(str) + " (" + gg["Tipo_KPI"].astype(str) + ")"
+        gg["label"] = gg.apply(lambda r: f"Gap {money(r['Gap']) if r['Tipo_KPI']=='$' else qty(r['Gap'])} | {pct(r['Cumpl'])}", axis=1)
 
         fig = px.bar(gg, x="Gap", y="key", orientation="h", text="label")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10))
@@ -567,5 +396,4 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("### Nota (para no volver a frustrarse)")
-    st.info("Si ves % absurdos (ej: 3000%+), casi seguro hay filas con Objetivo=0 o muy chico. Por defecto este tablero las excluye del % para no distorsionar.")
+    st.info("✅ Si antes veías Real/Obj en 0 era por el formato AR de números. Este build lo corrige.")
