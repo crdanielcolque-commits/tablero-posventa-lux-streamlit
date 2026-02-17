@@ -8,7 +8,7 @@ import gdown
 st.set_page_config(page_title="Tablero Posventa", layout="wide")
 
 # ==========================
-# CONFIG DRIVE (ACTUALIZADO)
+# CONFIG DRIVE
 # ==========================
 DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"
 EXCEL_LOCAL = "base_posventa.xlsx"
@@ -122,6 +122,56 @@ def badge_html(estado):
         return '<span class="badge badge-green">VERDE</span>'
     return '<span class="badge badge-gray">—</span>'
 
+# ✅ PARSER NUMÉRICO ARGENTINA
+def to_number_ar(s):
+    if pd.isna(s):
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+
+    txt = str(s).strip()
+    if txt == "":
+        return None
+
+    # dejar solo dígitos, coma, punto y signo menos
+    txt = re.sub(r"[^0-9,\.\-]", "", txt)
+
+    # casos:
+    # 1) 1.234.567,89  -> 1234567.89
+    # 2) 1234567,89    -> 1234567.89
+    # 3) 1,234,567.89  -> (poco probable) lo manejamos como US: 1234567.89
+    if txt.count(",") >= 1 and txt.count(".") >= 1:
+        # asumimos AR: puntos miles + coma decimal si la coma aparece al final con 1-2 dígitos
+        if re.search(r",\d{1,2}$", txt):
+            txt = txt.replace(".", "")
+            txt = txt.replace(",", ".")
+        else:
+            # fallback US
+            txt = txt.replace(",", "")
+    elif txt.count(",") >= 1 and txt.count(".") == 0:
+        # AR simple: coma decimal
+        txt = txt.replace(",", ".")
+    # si solo tiene puntos, lo dejamos (puede ser decimal US o entero con punto, to_numeric define)
+
+    try:
+        return float(txt)
+    except Exception:
+        return None
+
+def coerce_numeric_ar(series: pd.Series) -> pd.Series:
+    return series.apply(to_number_ar).astype("float64")
+
+def norm_tipo_kpi(x):
+    if pd.isna(x):
+        return None
+    t = str(x).strip().upper()
+    # si viene raro, lo reducimos a "$" o "Q"
+    if "$" in t:
+        return "$"
+    if "Q" in t:
+        return "Q"
+    return t
+
 # ==========================
 # Carga desde Google Sheets
 # ==========================
@@ -129,7 +179,6 @@ def badge_html(estado):
 def load_from_drive():
     url = f"https://docs.google.com/spreadsheets/d/{DRIVE_FILE_ID}/export?format=xlsx"
     gdown.download(url, EXCEL_LOCAL, quiet=True, fuzzy=True)
-
     df = pd.read_excel(EXCEL_LOCAL, sheet_name=0)
 
     try:
@@ -146,7 +195,6 @@ def load_from_drive():
 # ==========================
 def resolve_schema(df: pd.DataFrame) -> dict:
     col = {}
-
     col["fecha"] = find_col(df, ["Fecha"])
     col["semana"] = find_col(df, ["Semana"])
     col["sucursal"] = find_col(df, ["Sucursal"])
@@ -182,11 +230,11 @@ def normalize_dim_kpi(dim_kpi: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame()
     out["KPI"] = dim_kpi[kpi_col] if kpi_col else None
-    out["Umbral_Amarillo"] = dim_kpi[ua_col] if ua_col else 0.90
-    out["Umbral_Verde"] = dim_kpi[uv_col] if uv_col else 1.00
+    out["Umbral_Amarillo"] = pd.to_numeric(dim_kpi[ua_col], errors="coerce") if ua_col else 0.90
+    out["Umbral_Verde"] = pd.to_numeric(dim_kpi[uv_col], errors="coerce") if uv_col else 1.00
 
-    out["Umbral_Amarillo"] = pd.to_numeric(out["Umbral_Amarillo"], errors="coerce").fillna(0.90)
-    out["Umbral_Verde"] = pd.to_numeric(out["Umbral_Verde"], errors="coerce").fillna(1.00)
+    out["Umbral_Amarillo"] = out["Umbral_Amarillo"].fillna(0.90)
+    out["Umbral_Verde"] = out["Umbral_Verde"].fillna(1.00)
     out = out.dropna(subset=["KPI"]).copy()
     return out
 
@@ -202,8 +250,12 @@ def build_kpi_week(df_raw: pd.DataFrame, schema: dict) -> pd.DataFrame:
 
     df["Semana_Num"] = df[c["semana"]].apply(parse_semana_num)
 
+    # ✅ normalizar Tipo_KPI
+    df[c["tipo_kpi"]] = df[c["tipo_kpi"]].apply(norm_tipo_kpi)
+
+    # ✅ convertir números estilo AR (clave del problema)
     for k in ["real_$", "obj_$", "real_q", "obj_q", "costo_$", "margen_$"]:
-        df[c[k]] = pd.to_numeric(df[c[k]], errors="coerce")
+        df[c[k]] = coerce_numeric_ar(df[c[k]])
 
     df["Real_val"] = df.apply(lambda r: r[c["real_$"]] if r[c["tipo_kpi"]] == "$" else r[c["real_q"]], axis=1)
     df["Obj_val"]  = df.apply(lambda r: r[c["obj_$"]]  if r[c["tipo_kpi"]] == "$" else r[c["obj_q"]], axis=1)
@@ -300,7 +352,8 @@ st.sidebar.title("Filtros obligatorios")
 semanas = sorted(df_week["Semana_Num"].dropna().unique())
 sucursales = sorted(df_week["Sucursal"].dropna().unique())
 
-semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=len(semanas)-1)
+# ✅ Semana 1 por defecto
+semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=0 if len(semanas) else 0)
 sucursal = st.sidebar.selectbox("Sucursal", ["TODAS (Consolidado)"] + sucursales)
 
 df_last_suc = df_week[df_week["Semana_Num"] == semana_corte].copy()
@@ -317,9 +370,6 @@ st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
 
 tab1, tab2, tab3 = st.tabs(["🏠 Resumen Ejecutivo", "📈 Seguimiento", "🧩 Gestión"])
 
-# ==========================
-# TAB 1
-# ==========================
 with tab1:
     econ = df_last[df_last["Tipo_KPI"] == "$"].copy()
     oper = df_last[df_last["Tipo_KPI"] == "Q"].copy()
@@ -434,7 +484,6 @@ with tab1:
         else:
             st.info("No hay KPIs operativos (Q) con objetivo válido en este corte.")
 
-# TAB 2 y TAB 3 se mantienen igual (no los tocamos)
 with tab2:
     st.subheader("Seguimiento por KPI (semanal vs acumulado)")
     if sucursal == "TODAS (Consolidado)":
