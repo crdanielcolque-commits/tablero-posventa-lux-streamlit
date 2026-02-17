@@ -44,13 +44,20 @@ section[data-testid="stSidebar"] .block-container {padding-top: 1.1rem;}
 }
 .metric-sub {opacity: 0.72; font-size: 0.9rem; margin-top: 6px;}
 
+.exec-card{
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 18px;
+  padding: 16px 16px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.05);
+  background: linear-gradient(180deg, rgba(248,250,255,1) 0%, rgba(255,255,255,1) 100%);
+}
+.exec-title{font-size:0.95rem; opacity:0.75; font-weight:800; letter-spacing:0.3px;}
+.exec-main{font-size:1.65rem; font-weight:900; margin-top:6px;}
+.exec-sub{opacity:0.78; font-size:0.92rem; margin-top:6px; line-height:1.25;}
+
 /* =========================================================
    ✅ Multiselect "chips" (tags) -> VERDE SUAVE
-   (Streamlit cambia la estructura según versión/tema, por eso
-   atacamos varias rutas con !important)
    ========================================================= */
-
-/* BaseWeb tag (común) */
 section[data-testid="stSidebar"] div[data-baseweb="tag"],
 section[data-testid="stSidebar"] span[data-baseweb="tag"],
 section[data-testid="stSidebar"] div[data-baseweb="tag"] > span,
@@ -59,29 +66,21 @@ section[data-testid="stSidebar"] div[data-baseweb="tag"] > div {
   border: 1px solid #B7E1C1 !important;
   box-shadow: none !important;
 }
-
-/* Texto dentro del chip */
 section[data-testid="stSidebar"] div[data-baseweb="tag"] * ,
 section[data-testid="stSidebar"] span[data-baseweb="tag"] * {
   color: #1B5E20 !important;
   font-weight: 700 !important;
 }
-
-/* Botón X / íconos del chip */
 section[data-testid="stSidebar"] div[data-baseweb="tag"] svg,
 section[data-testid="stSidebar"] span[data-baseweb="tag"] svg {
   color: #1B5E20 !important;
   fill: #1B5E20 !important;
 }
-
-/* Hover */
 section[data-testid="stSidebar"] div[data-baseweb="tag"]:hover,
 section[data-testid="stSidebar"] span[data-baseweb="tag"]:hover {
   background-color: #DFF2E3 !important;
   border-color: #9ED3AD !important;
 }
-
-/* Fallback adicional: algunos themes pintan el tag como "pill" dentro del multiselect */
 section[data-testid="stSidebar"] div[role="listbox"] + div div[role="button"]{
   background-color: #E8F5E9 !important;
   border: 1px solid #B7E1C1 !important;
@@ -124,6 +123,11 @@ def money_fmt(x):
         return f"${x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return str(x)
+
+def money_fmt_signed(x):
+    if x is None or pd.isna(x): return "—"
+    sign = "-" if x < 0 else ""
+    return sign + money_fmt(abs(x))
 
 def num_fmt(x):
     if x is None or pd.isna(x): return "—"
@@ -207,6 +211,20 @@ def metric_box(title, value, sub_html=""):
       <div class="small-muted">{title}</div>
       <div style="font-size: 1.7rem; font-weight: 900; margin-top: 2px;">{value}</div>
       <div class="metric-sub">{sub_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def exec_card(title, cumpl, real, obj, gap):
+    estado = estado_por_umbral(cumpl)
+    st.markdown(f"""
+    <div class="exec-card">
+      <div class="exec-title">{title}</div>
+      <div class="exec-main">{pct_fmt_ratio(cumpl)} {badge_html(estado)}</div>
+      <div class="exec-sub">
+        <b>Real:</b> {money_fmt(real)} &nbsp;·&nbsp;
+        <b>Obj:</b> {money_fmt(obj)}<br/>
+        <b>Gap (Obj-Real):</b> {money_fmt_signed(gap)}
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -343,7 +361,8 @@ def segment_metrics(df_seg):
     cump = safe_ratio(real, obj)
     margen = float(df_seg["Margen_Acum"].sum()) if ("Margen_Acum" in df_seg.columns and len(df_seg)) else 0.0
     margen_pct = safe_ratio(margen, real)
-    return real, obj, cump, margen, margen_pct
+    gap = obj - real  # positivo = faltante
+    return real, obj, cump, margen, margen_pct, gap
 
 # ==========================
 # CARGA + NORMALIZA
@@ -392,7 +411,10 @@ rep_sel = st.sidebar.multiselect("Repuestos: aperturas incluidas", options=rep_a
 srv_sel = st.sidebar.multiselect("Servicios: aperturas incluidas", options=srv_aperturas, default=srv_aperturas)
 
 st.sidebar.markdown("---")
-rank_metric = st.sidebar.selectbox("Ranking (macro y micro)", ["Cumplimiento %", "Real (monto)"], index=0)
+rank_metric = st.sidebar.selectbox("Ranking (micro)", ["Cumplimiento %", "Real (monto)"], index=0)
+
+st.sidebar.markdown("---")
+rank_gap_scope = st.sidebar.selectbox("Ranking GAP $ (macro)", ["Repuestos", "Servicios", "Total Posventa"], index=2)
 
 # ==========================
 # HEADER
@@ -403,26 +425,160 @@ st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
 tab1, tab2, tab3 = st.tabs(["🏆 P&L (Repuestos vs Servicios)", "📌 KPIs (resto)", "🧩 Gestión (desvíos)"])
 
 # ==========================
-# TAB 1 — P&L
+# TAB 1 — P&L + V2.0 (Strip + Ranking Gap + Tendencia)
 # ==========================
 with tab1:
+    # --- Segmentos base (en $)
     rep = df_last[(df_last["KPI"]=="Repuestos") & (df_last["Tipo_KPI"]=="$")].copy()
     srv = df_last[(df_last["KPI"]=="Servicios") & (df_last["Tipo_KPI"]=="$")].copy()
 
     rep_total = rep[rep["Apertura"].isin(rep_sel)].copy() if rep_sel else rep[rep["Apertura"]!="TOTAL"].copy()
     srv_total = srv[srv["Apertura"].isin(srv_sel)].copy() if srv_sel else srv[srv["Apertura"]!="TOTAL"].copy()
 
-    rep_real, rep_obj, rep_cump, rep_margen, rep_margen_pct = segment_metrics(rep_total)
-    srv_real, srv_obj, srv_cump, srv_margen, srv_margen_pct = segment_metrics(srv_total)
+    rep_real, rep_obj, rep_cump, rep_margen, rep_margen_pct, rep_gap = segment_metrics(rep_total)
+    srv_real, srv_obj, srv_cump, srv_margen, srv_margen_pct, srv_gap = segment_metrics(srv_total)
 
-    rep_estado = estado_por_umbral(rep_cump)
-    srv_estado = estado_por_umbral(srv_cump)
+    tot_real = rep_real + srv_real
+    tot_obj  = rep_obj + srv_obj
+    tot_cump = safe_ratio(tot_real, tot_obj)
+    tot_gap  = tot_obj - tot_real
+
+    # ==========================
+    # V2.0 — STRIP EJECUTIVO
+    # ==========================
+    st.markdown("## 🏛️ Resumen Ejecutivo (Dirección)")
+    ec1, ec2, ec3 = st.columns(3, gap="large")
+    with ec1:
+        exec_card("REPUESTOS", rep_cump, rep_real, rep_obj, rep_gap)
+    with ec2:
+        exec_card("SERVICIOS", srv_cump, srv_real, srv_obj, srv_gap)
+    with ec3:
+        exec_card("TOTAL POSVENTA", tot_cump, tot_real, tot_obj, tot_gap)
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
+    # ==========================
+    # V2.0 — RANKING POR GAP $ (macro por sucursal)
+    # ==========================
+    st.markdown("## 💰 Ranking por GAP $ (Obj - Real) — por sucursal")
+
+    base_rank = df_last_suc.copy()
+    base_rank = base_rank[base_rank["Tipo_KPI"] == "$"].copy()
+    base_rank = base_rank[(pd.notna(base_rank["Obj_Acum"])) & (base_rank["Obj_Acum"] > 0)].copy()
+
+    # Filtrar aperturas incluidas
+    rep_rank = base_rank[(base_rank["KPI"]=="Repuestos") & (base_rank["Apertura"].isin(rep_sel))].copy()
+    srv_rank = base_rank[(base_rank["KPI"]=="Servicios") & (base_rank["Apertura"].isin(srv_sel))].copy()
+
+    rep_suc = rep_rank.groupby("Sucursal", as_index=False).agg(Real=("Real_Acum","sum"), Obj=("Obj_Acum","sum"))
+    rep_suc["Gap"] = rep_suc["Obj"] - rep_suc["Real"]
+    rep_suc["Segmento"] = "Repuestos"
+
+    srv_suc = srv_rank.groupby("Sucursal", as_index=False).agg(Real=("Real_Acum","sum"), Obj=("Obj_Acum","sum"))
+    srv_suc["Gap"] = srv_suc["Obj"] - srv_suc["Real"]
+    srv_suc["Segmento"] = "Servicios"
+
+    tot_suc = pd.merge(rep_suc[["Sucursal","Real","Obj","Gap"]], srv_suc[["Sucursal","Real","Obj","Gap"]],
+                       on="Sucursal", how="outer", suffixes=("_Rep","_Srv"))
+    tot_suc = tot_suc.fillna(0)
+    tot_suc["Real"] = tot_suc["Real_Rep"] + tot_suc["Real_Srv"]
+    tot_suc["Obj"]  = tot_suc["Obj_Rep"] + tot_suc["Obj_Srv"]
+    tot_suc["Gap"]  = tot_suc["Obj"] - tot_suc["Real"]
+    tot_suc["Segmento"] = "Total Posventa"
+    tot_suc = tot_suc[["Sucursal","Real","Obj","Gap","Segmento"]].copy()
+
+    if rank_gap_scope == "Repuestos":
+        rk = rep_suc.copy()
+    elif rank_gap_scope == "Servicios":
+        rk = srv_suc.copy()
+    else:
+        rk = tot_suc.copy()
+
+    rk = rk.sort_values("Gap", ascending=False).copy()
+    rk["Gap_txt"] = rk["Gap"].apply(money_fmt_signed)
+    order = rk["Sucursal"].tolist()
+
+    fig_gap = px.bar(
+        rk,
+        x="Gap",
+        y="Sucursal",
+        orientation="h",
+        text="Gap_txt",
+        category_orders={"Sucursal": order}
+    )
+    fig_gap.update_layout(
+        height=420,
+        xaxis_title="GAP $ (Obj - Real)  |  (+) faltante  ·  (-) sobrecumplimiento",
+        yaxis_title=""
+    )
+    st.plotly_chart(fig_gap, use_container_width=True)
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
+    # ==========================
+    # V2.0 — TENDENCIA SEMANAL (acumulado)
+    # ==========================
+    st.markdown("## 📈 Tendencia semanal acumulada (Cumplimiento %)")
+
+    trend = df_week[df_week["Tipo_KPI"] == "$"].copy()
+    trend = trend[(trend["Semana_Num"].notna()) & (trend["Semana_Num"] <= semana_corte)].copy()
+
+    # aplicar sucursal filtro global para tendencia
+    if sucursal != "TODAS (Consolidado)":
+        trend = trend[trend["Sucursal"] == sucursal].copy()
+
+    # Repuestos/Servicios con aperturas incluidas
+    tr_rep = trend[(trend["KPI"]=="Repuestos") & (trend["Apertura"].isin(rep_sel))].copy()
+    tr_srv = trend[(trend["KPI"]=="Servicios") & (trend["Apertura"].isin(srv_sel))].copy()
+
+    tr_rep = tr_rep.groupby("Semana_Num", as_index=False).agg(Real=("Real_Acum","sum"), Obj=("Obj_Acum","sum"))
+    tr_rep["Cumpl"] = tr_rep.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    tr_rep["Segmento"] = "Repuestos"
+
+    tr_srv = tr_srv.groupby("Semana_Num", as_index=False).agg(Real=("Real_Acum","sum"), Obj=("Obj_Acum","sum"))
+    tr_srv["Cumpl"] = tr_srv.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    tr_srv["Segmento"] = "Servicios"
+
+    tr_tot = pd.merge(tr_rep[["Semana_Num","Real","Obj"]], tr_srv[["Semana_Num","Real","Obj"]],
+                      on="Semana_Num", how="outer", suffixes=("_Rep","_Srv")).fillna(0)
+    tr_tot["Real"] = tr_tot["Real_Rep"] + tr_tot["Real_Srv"]
+    tr_tot["Obj"]  = tr_tot["Obj_Rep"] + tr_tot["Obj_Srv"]
+    tr_tot["Cumpl"] = tr_tot.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    tr_tot["Segmento"] = "Total Posventa"
+    tr_tot = tr_tot[["Semana_Num","Cumpl","Segmento"]].copy()
+
+    tr_rep = tr_rep[["Semana_Num","Cumpl","Segmento"]].copy()
+    tr_srv = tr_srv[["Semana_Num","Cumpl","Segmento"]].copy()
+
+    trend_all = pd.concat([tr_rep, tr_srv, tr_tot], ignore_index=True)
+    trend_all = trend_all.dropna(subset=["Cumpl"]).copy()
+    trend_all = trend_all.sort_values(["Segmento","Semana_Num"]).copy()
+
+    if len(trend_all) == 0:
+        st.info("No hay datos suficientes para tendencia con los filtros actuales.")
+    else:
+        fig_tr = px.line(
+            trend_all,
+            x="Semana_Num",
+            y="Cumpl",
+            color="Segmento",
+            markers=True
+        )
+        fig_tr.update_yaxes(tickformat=".0%")
+        fig_tr.update_layout(height=360, xaxis_title="Semana", yaxis_title="Cumplimiento acumulado")
+        st.plotly_chart(fig_tr, use_container_width=True)
+
+    # ==========================
+    # Macro → Micro (lo existente)
+    # ==========================
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.markdown("## 🔎 Macro → Micro (detalle por aperturas)")
 
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
         a,b,c = st.columns(3)
-        with a: metric_box("Cumplimiento (Acum.)", pct_fmt_ratio(rep_cump), f"Estado: {badge_html(rep_estado)}")
+        with a: metric_box("Cumplimiento (Acum.)", pct_fmt_ratio(rep_cump), f"Estado: {badge_html(estado_por_umbral(rep_cump))}")
         with b: metric_box("Real (Acum.)", money_fmt(rep_real), f"Objetivo: {money_fmt(rep_obj)}")
         with c: metric_box("Margen % (Acum.)", pct_fmt_ratio(rep_margen_pct), f"Margen: {money_fmt(rep_margen)}")
 
@@ -446,7 +602,7 @@ with tab1:
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
         a,b,c = st.columns(3)
-        with a: metric_box("Cumplimiento (Acum.)", pct_fmt_ratio(srv_cump), f"Estado: {badge_html(srv_estado)}")
+        with a: metric_box("Cumplimiento (Acum.)", pct_fmt_ratio(srv_cump), f"Estado: {badge_html(estado_por_umbral(srv_cump))}")
         with b: metric_box("Real (Acum.)", money_fmt(srv_real), f"Objetivo: {money_fmt(srv_obj)}")
         with c: metric_box("Margen % (Acum.)", pct_fmt_ratio(srv_margen_pct), f"Margen: {money_fmt(srv_margen)}")
 
@@ -467,55 +623,7 @@ with tab1:
         else:
             st.info("Servicios: sin objetivos válidos para aperturas seleccionadas.")
 
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-    st.markdown("### 🏁 Ranking por sucursal (Macro)")
-
-    df_rank_base = df_last_suc.copy()
-
-    rep_rank = df_rank_base[(df_rank_base["KPI"]=="Repuestos") & (df_rank_base["Tipo_KPI"]=="$") & (df_rank_base["Apertura"].isin(rep_sel))].copy()
-    srv_rank = df_rank_base[(df_rank_base["KPI"]=="Servicios") & (df_rank_base["Tipo_KPI"]=="$") & (df_rank_base["Apertura"].isin(srv_sel))].copy()
-
-    rep_rank_suc = rep_rank.groupby("Sucursal", as_index=False).agg(Real_Acum=("Real_Acum","sum"), Obj_Acum=("Obj_Acum","sum"))
-    rep_rank_suc["Cumpl_Acum"] = rep_rank_suc.apply(lambda r: safe_ratio(r["Real_Acum"], r["Obj_Acum"]), axis=1)
-
-    srv_rank_suc = srv_rank.groupby("Sucursal", as_index=False).agg(Real_Acum=("Real_Acum","sum"), Obj_Acum=("Obj_Acum","sum"))
-    srv_rank_suc["Cumpl_Acum"] = srv_rank_suc.apply(lambda r: safe_ratio(r["Real_Acum"], r["Obj_Acum"]), axis=1)
-
-    rc1, rc2 = st.columns(2, gap="large")
-    with rc1:
-        st.markdown("#### Repuestos — por sucursal (macro)")
-        if len(rep_rank_suc):
-            xcol = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
-            rep_rank_suc = rep_rank_suc.sort_values(xcol, ascending=False).copy()
-            order = rep_rank_suc["Sucursal"].tolist()
-            fig3 = px.bar(
-                rep_rank_suc, x=xcol, y="Sucursal", orientation="h",
-                text=rep_rank_suc[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
-                category_orders={"Sucursal": order}
-            )
-            if xcol=="Cumpl_Acum": fig3.update_layout(xaxis_tickformat=".0%")
-            fig3.update_layout(height=380)
-            st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("No hay ranking macro de Repuestos con aperturas seleccionadas.")
-
-    with rc2:
-        st.markdown("#### Servicios — por sucursal (macro)")
-        if len(srv_rank_suc):
-            xcol = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
-            srv_rank_suc = srv_rank_suc.sort_values(xcol, ascending=False).copy()
-            order = srv_rank_suc["Sucursal"].tolist()
-            fig4 = px.bar(
-                srv_rank_suc, x=xcol, y="Sucursal", orientation="h",
-                text=srv_rank_suc[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
-                category_orders={"Sucursal": order}
-            )
-            if xcol=="Cumpl_Acum": fig4.update_layout(xaxis_tickformat=".0%")
-            fig4.update_layout(height=380)
-            st.plotly_chart(fig4, use_container_width=True)
-        else:
-            st.info("No hay ranking macro de Servicios con aperturas seleccionadas.")
-
+    # ========= MICRO PRO (renombrado a Micro —)
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.markdown("## 🎯 Micro — ranking sucursal + apertura")
 
