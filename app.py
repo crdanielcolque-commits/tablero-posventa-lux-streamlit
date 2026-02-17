@@ -61,7 +61,6 @@ h1 {margin-bottom: 0.2rem;}
 # Helpers
 # ==========================
 def _norm(s: str) -> str:
-    """Normaliza: minus, sin acentos, sin espacios, sin símbolos raros."""
     s = str(s).strip().lower()
     s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     s = s.replace(" ", "").replace("-", "").replace(".", "").replace("/", "")
@@ -69,13 +68,11 @@ def _norm(s: str) -> str:
     return s
 
 def find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    """Devuelve el nombre real de la columna que matchea con algún candidato normalizado."""
     norm_map = {_norm(c): c for c in df.columns}
     for cand in candidates:
         key = _norm(cand)
         if key in norm_map:
             return norm_map[key]
-    # match por contains (último recurso)
     for cand in candidates:
         key = _norm(cand)
         for k, real in norm_map.items():
@@ -133,22 +130,21 @@ def load_from_drive():
     url = f"https://docs.google.com/spreadsheets/d/{DRIVE_FILE_ID}/export?format=xlsx"
     gdown.download(url, EXCEL_LOCAL, quiet=True, fuzzy=True)
 
-    # Si el archivo nuevo cambió nombres de hojas, ajustá acá:
-    df = pd.read_excel(EXCEL_LOCAL, sheet_name=0)  # primera hoja (más robusto)
+    # Primera hoja por robustez
+    df = pd.read_excel(EXCEL_LOCAL, sheet_name=0)
+
+    # DIM_KPI opcional
     try:
         dim_kpi = pd.read_excel(EXCEL_LOCAL, sheet_name="DIM_KPI")
     except Exception:
-        # si no existe DIM_KPI, creamos uno mínimo (umbrales por defecto)
         dim_kpi = pd.DataFrame(columns=["KPI", "Umbral_Amarillo", "Umbral_Verde"])
 
-    # Normaliza headers (solo strip)
     df.columns = [str(c).strip() for c in df.columns]
     dim_kpi.columns = [str(c).strip() for c in dim_kpi.columns]
-
     return df, dim_kpi
 
 # ==========================
-# Resolver columnas del Excel nuevo
+# Resolver columnas del Excel
 # ==========================
 def resolve_schema(df: pd.DataFrame) -> dict:
     col = {}
@@ -159,8 +155,7 @@ def resolve_schema(df: pd.DataFrame) -> dict:
     col["kpi"] = find_col(df, ["KPI", "Indicador", "Indicador_KPI"])
     col["tipo_kpi"] = find_col(df, ["Tipo_KPI", "Tipo KPI", "Tipo", "TipoIndicador", "Tipo_Indicador"])
 
-    # Real y Objetivo (money y qty)
-    col["real_$"] = find_col(df, ["Real_$", "Real $", "Real$", "Real_ARS", "Real_Ars", "Real_Pesos", "Real_Monto"])
+    col["real_$"] = find_col(df, ["Real_$", "Real $", "Real$", "Real_ARS", "Real_Pesos", "Real_Monto"])
     col["obj_$"]  = find_col(df, ["Objetivo_$", "Objetivo $", "Objetivo$", "Obj_$", "Obj $", "Objetivo_ARS", "Objetivo_Monto"])
 
     col["real_q"] = find_col(df, ["Real_Q", "Real Q", "Real_Unidades", "Real_UD", "Real_Cant", "Real_Cantidad"])
@@ -169,7 +164,9 @@ def resolve_schema(df: pd.DataFrame) -> dict:
     col["costo_$"]  = find_col(df, ["Costo_$", "Costo $", "Costo$", "Costo_Monto"])
     col["margen_$"] = find_col(df, ["Margen_$", "Margen $", "Margen$", "Margen_Monto"])
 
-    missing = [k for k,v in col.items() if v is None and k in ["semana","sucursal","kpi","tipo_kpi","real_$","obj_$","real_q","obj_q","costo_$","margen_$"]]
+    missing = [k for k, v in col.items() if v is None and k in
+               ["semana", "sucursal", "kpi", "tipo_kpi", "real_$", "obj_$", "real_q", "obj_q", "costo_$", "margen_$"]]
+
     if missing:
         return {"ok": False, "missing": missing, "found_cols": list(df.columns), "col": col}
     return {"ok": True, "col": col}
@@ -179,16 +176,17 @@ def resolve_schema(df: pd.DataFrame) -> dict:
 # ==========================
 def normalize_dim_kpi(dim_kpi: pd.DataFrame) -> pd.DataFrame:
     if dim_kpi is None or len(dim_kpi) == 0:
-        return pd.DataFrame(columns=["KPI","Umbral_Amarillo","Umbral_Verde"])
+        return pd.DataFrame(columns=["KPI", "Umbral_Amarillo", "Umbral_Verde"])
 
-    kpi_col = find_col(dim_kpi, ["KPI","Indicador","Indicador_KPI"])
-    ua_col  = find_col(dim_kpi, ["Umbral_Amarillo","Umbral Amarillo","Amarillo"])
-    uv_col  = find_col(dim_kpi, ["Umbral_Verde","Umbral Verde","Verde"])
+    kpi_col = find_col(dim_kpi, ["KPI", "Indicador", "Indicador_KPI"])
+    ua_col  = find_col(dim_kpi, ["Umbral_Amarillo", "Umbral Amarillo", "Amarillo"])
+    uv_col  = find_col(dim_kpi, ["Umbral_Verde", "Umbral Verde", "Verde"])
 
     out = pd.DataFrame()
     out["KPI"] = dim_kpi[kpi_col] if kpi_col else None
     out["Umbral_Amarillo"] = dim_kpi[ua_col] if ua_col else 0.90
     out["Umbral_Verde"] = dim_kpi[uv_col] if uv_col else 1.00
+
     out["Umbral_Amarillo"] = pd.to_numeric(out["Umbral_Amarillo"], errors="coerce").fillna(0.90)
     out["Umbral_Verde"] = pd.to_numeric(out["Umbral_Verde"], errors="coerce").fillna(1.00)
     out = out.dropna(subset=["KPI"]).copy()
@@ -201,17 +199,16 @@ def build_kpi_week(df_raw: pd.DataFrame, schema: dict) -> pd.DataFrame:
     c = schema["col"]
     df = df_raw.copy()
 
-    # Fecha (si existe)
     if c["fecha"]:
         df[c["fecha"]] = pd.to_datetime(df[c["fecha"]], errors="coerce")
 
     df["Semana_Num"] = df[c["semana"]].apply(parse_semana_num)
 
-    # Asegurar tipos numéricos
-    for k in ["real_$","obj_$","real_q","obj_q","costo_$","margen_$"]:
+    # numéricos
+    for k in ["real_$", "obj_$", "real_q", "obj_q", "costo_$", "margen_$"]:
         df[c[k]] = pd.to_numeric(df[c[k]], errors="coerce")
 
-    # Valores unificados
+    # unificados
     df["Real_val"] = df.apply(lambda r: r[c["real_$"]] if r[c["tipo_kpi"]] == "$" else r[c["real_q"]], axis=1)
     df["Obj_val"]  = df.apply(lambda r: r[c["obj_$"]]  if r[c["tipo_kpi"]] == "$" else r[c["obj_q"]], axis=1)
 
@@ -220,32 +217,34 @@ def build_kpi_week(df_raw: pd.DataFrame, schema: dict) -> pd.DataFrame:
         as_index=False
     ).agg(
         Real_Sem=("Real_val", "sum"),
-        Obj_Sem=("Obj_val", "max"),
+        Obj_Sem=("Obj_val", "sum"),   # <- SUM para opción A (sumar subcategorías)
         Costo_Sem=(c["costo_$"], "sum"),
         Margen_Sem=(c["margen_$"], "sum"),
     )
 
-    # Renombres a estándar
     agg = agg.rename(columns={
         c["sucursal"]: "Sucursal",
         c["kpi"]: "KPI",
         c["tipo_kpi"]: "Tipo_KPI",
     })
 
-    agg["Cumpl_Sem"] = agg["Real_Sem"] / agg["Obj_Sem"]
+    # Cumplimiento semanal seguro
+    agg["Cumpl_Sem"] = agg.apply(lambda r: (r["Real_Sem"] / r["Obj_Sem"]) if (pd.notna(r["Obj_Sem"]) and r["Obj_Sem"] != 0) else None, axis=1)
 
     agg = agg.sort_values(["Sucursal", "KPI", "Semana_Num"]).copy()
-    agg["Real_Acum"] = agg.groupby(["Sucursal","KPI"])["Real_Sem"].cumsum()
-    agg["Obj_Acum"]  = agg.groupby(["Sucursal","KPI"])["Obj_Sem"].cumsum()
-    agg["Cumpl_Acum"] = agg["Real_Acum"] / agg["Obj_Acum"]
 
-    agg["Margen_Acum"] = agg.groupby(["Sucursal","KPI"])["Margen_Sem"].cumsum()
-    agg["MargenPct_Acum"] = (agg["Margen_Acum"] / agg["Real_Acum"]).where(agg["Real_Acum"] != 0)
+    agg["Real_Acum"] = agg.groupby(["Sucursal", "KPI"])["Real_Sem"].cumsum()
+    agg["Obj_Acum"]  = agg.groupby(["Sucursal", "KPI"])["Obj_Sem"].cumsum()
+
+    agg["Cumpl_Acum"] = agg.apply(lambda r: (r["Real_Acum"] / r["Obj_Acum"]) if (pd.notna(r["Obj_Acum"]) and r["Obj_Acum"] != 0) else None, axis=1)
+
+    agg["Margen_Acum"] = agg.groupby(["Sucursal", "KPI"])["Margen_Sem"].cumsum()
+    agg["MargenPct_Acum"] = agg.apply(lambda r: (r["Margen_Acum"] / r["Real_Acum"]) if (pd.notna(r["Real_Acum"]) and r["Real_Acum"] != 0) else None, axis=1)
 
     return agg
 
 def aplicar_reglas(df_last, dim_kpi):
-    out = df_last.merge(dim_kpi[["KPI","Umbral_Amarillo","Umbral_Verde"]], on="KPI", how="left")
+    out = df_last.merge(dim_kpi[["KPI", "Umbral_Amarillo", "Umbral_Verde"]], on="KPI", how="left")
     out["Umbral_Amarillo"] = out["Umbral_Amarillo"].fillna(0.90)
     out["Umbral_Verde"] = out["Umbral_Verde"].fillna(1.00)
     out["Estado_Acum"] = out.apply(
@@ -254,18 +253,24 @@ def aplicar_reglas(df_last, dim_kpi):
     )
     return out
 
+# ✅ Opción A consolidado: SUMA TOTAL subcategorías + filtro objetivo válido
 def consolidar_todas(df_last_suc):
-    cons = df_last_suc.groupby(["KPI","Tipo_KPI"], as_index=False).agg(
-        Real_Acum=("Real_Acum","sum"),
-        Obj_Acum=("Obj_Acum","sum"),
-        Margen_Acum=("Margen_Acum","sum"),
-        Real_Sem=("Real_Sem","sum"),
-        Obj_Sem=("Obj_Sem","sum"),
-        Margen_Sem=("Margen_Sem","sum"),
+    # Excluir filas sin objetivo válido (evita NaN / divisiones por cero)
+    df_valid = df_last_suc[(pd.notna(df_last_suc["Obj_Acum"])) & (df_last_suc["Obj_Acum"] > 0)].copy()
+
+    cons = df_valid.groupby(["KPI", "Tipo_KPI"], as_index=False).agg(
+        Real_Acum=("Real_Acum", "sum"),
+        Obj_Acum=("Obj_Acum", "sum"),
+        Margen_Acum=("Margen_Acum", "sum"),
+        Real_Sem=("Real_Sem", "sum"),
+        Obj_Sem=("Obj_Sem", "sum"),
+        Margen_Sem=("Margen_Sem", "sum"),
     )
-    cons["Cumpl_Acum"] = cons["Real_Acum"] / cons["Obj_Acum"]
-    cons["Cumpl_Sem"]  = cons["Real_Sem"] / cons["Obj_Sem"]
-    cons["MargenPct_Acum"] = (cons["Margen_Acum"] / cons["Real_Acum"]).where(cons["Real_Acum"] != 0)
+
+    cons["Cumpl_Acum"] = cons.apply(lambda r: (r["Real_Acum"] / r["Obj_Acum"]) if (r["Obj_Acum"] and r["Obj_Acum"] != 0) else None, axis=1)
+    cons["Cumpl_Sem"]  = cons.apply(lambda r: (r["Real_Sem"] / r["Obj_Sem"]) if (r["Obj_Sem"] and r["Obj_Sem"] != 0) else None, axis=1)
+    cons["MargenPct_Acum"] = cons.apply(lambda r: (r["Margen_Acum"] / r["Real_Acum"]) if (r["Real_Acum"] and r["Real_Acum"] != 0) else None, axis=1)
+
     return cons
 
 # ==========================
@@ -275,14 +280,13 @@ df_raw, dim_kpi_raw = load_from_drive()
 schema = resolve_schema(df_raw)
 
 if not schema["ok"]:
-    st.error("⚠️ El archivo nuevo cambió nombres de columnas y faltan campos necesarios.")
+    st.error("⚠️ El archivo cambió nombres de columnas y faltan campos necesarios.")
     st.write("**Faltan (claves):**", schema["missing"])
     st.write("**Columnas encontradas en tu hoja:**")
     st.code("\n".join(schema["found_cols"]))
     st.stop()
 
 dim_kpi = normalize_dim_kpi(dim_kpi_raw)
-
 df_week = build_kpi_week(df_raw, schema)
 
 # Sidebar filtros
@@ -293,7 +297,7 @@ sucursales = sorted(df_week["Sucursal"].dropna().unique())
 semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=len(semanas)-1)
 sucursal = st.sidebar.selectbox("Sucursal", ["TODAS (Consolidado)"] + sucursales)
 
-# Snapshots semana corte
+# Snapshot semana corte
 df_last_suc = df_week[df_week["Semana_Num"] == semana_corte].copy()
 df_last_suc = aplicar_reglas(df_last_suc, dim_kpi)
 
@@ -304,9 +308,7 @@ else:
     df_last = consolidar_todas(df_last_suc)
     df_last = aplicar_reglas(df_last, dim_kpi)
 
-# ==========================
 # Header
-# ==========================
 st.title("Tablero Posventa — Semanal + Acumulado")
 st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
 
@@ -319,16 +321,16 @@ with tab1:
     econ = df_last[df_last["Tipo_KPI"] == "$"].copy()
     oper = df_last[df_last["Tipo_KPI"] == "Q"].copy()
 
-    # Consolidados SUM/SUM
+    # Consolidados SUM/SUM seguros
     econ_real = float(econ["Real_Acum"].sum()) if len(econ) else 0.0
-    econ_obj  = float(econ["Obj_Acum"].sum())  if len(econ) else 0.0
+    econ_obj  = float(econ["Obj_Acum"].sum()) if ("Obj_Acum" in econ.columns and len(econ)) else 0.0
     econ_cump = (econ_real / econ_obj) if econ_obj else None
 
     econ_margen = float(econ["Margen_Acum"].sum()) if ("Margen_Acum" in econ.columns and len(econ)) else 0.0
     econ_margen_pct = (econ_margen / econ_real) if econ_real else None
 
     oper_real = float(oper["Real_Acum"].sum()) if len(oper) else 0.0
-    oper_obj  = float(oper["Obj_Acum"].sum())  if len(oper) else 0.0
+    oper_obj  = float(oper["Obj_Acum"].sum()) if ("Obj_Acum" in oper.columns and len(oper)) else 0.0
     oper_cump = (oper_real / oper_obj) if oper_obj else None
 
     # Semáforo global + conteos
@@ -388,16 +390,17 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        if len(econ):
+        econ_plot = econ.dropna(subset=["Cumpl_Acum"]).copy()
+        if len(econ_plot):
             fig = px.bar(
-                econ.sort_values("Cumpl_Acum"),
+                econ_plot.sort_values("Cumpl_Acum"),
                 x="Cumpl_Acum", y="KPI", orientation="h",
-                text=econ["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%")
+                text=econ_plot["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
             )
             fig.update_layout(xaxis_tickformat=".0%")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No hay KPIs económicos ($) en este corte.")
+            st.info("No hay KPIs económicos ($) con objetivo válido en este corte.")
 
     with col2:
         st.subheader("🟢 Operativo (Q)")
@@ -418,16 +421,17 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        if len(oper):
+        oper_plot = oper.dropna(subset=["Cumpl_Acum"]).copy()
+        if len(oper_plot):
             fig2 = px.bar(
-                oper.sort_values("Cumpl_Acum"),
+                oper_plot.sort_values("Cumpl_Acum"),
                 x="Cumpl_Acum", y="KPI", orientation="h",
-                text=oper["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%")
+                text=oper_plot["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
             )
             fig2.update_layout(xaxis_tickformat=".0%")
             st.plotly_chart(fig2, use_container_width=True)
         else:
-            st.info("No hay KPIs operativos (Q) en este corte.")
+            st.info("No hay KPIs operativos (Q) con objetivo válido en este corte.")
 
     if sucursal == "TODAS (Consolidado)":
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
@@ -440,17 +444,22 @@ with tab1:
             aggfunc="mean"
         ).reset_index().melt(id_vars="KPI", var_name="Sucursal", value_name="Cumpl_Acum")
 
-        fig_h = px.density_heatmap(
-            heat,
-            x="Sucursal",
-            y="KPI",
-            z="Cumpl_Acum",
-            histfunc="avg",
-            title="Cumplimiento Acumulado por KPI y Sucursal",
-            labels={"Cumpl_Acum": "Cumpl. Acum"}
-        )
-        fig_h.update_layout(coloraxis_colorbar=dict(tickformat=".0%"))
-        st.plotly_chart(fig_h, use_container_width=True)
+        heat = heat.dropna(subset=["Cumpl_Acum"]).copy()
+
+        if len(heat):
+            fig_h = px.density_heatmap(
+                heat,
+                x="Sucursal",
+                y="KPI",
+                z="Cumpl_Acum",
+                histfunc="avg",
+                title="Cumplimiento Acumulado por KPI y Sucursal",
+                labels={"Cumpl_Acum": "Cumpl. Acum"}
+            )
+            fig_h.update_layout(coloraxis_colorbar=dict(tickformat=".0%"))
+            st.plotly_chart(fig_h, use_container_width=True)
+        else:
+            st.info("No hay datos con cumplimiento válido para el heatmap en este corte.")
 
 # ==========================
 # TAB 2: Seguimiento
@@ -459,7 +468,7 @@ with tab2:
     st.subheader("Seguimiento por KPI (semanal vs acumulado)")
 
     if sucursal == "TODAS (Consolidado)":
-        st.info("Para seguimiento semanal por KPI, elegí una sucursal (en consolidado mezclaría bases).")
+        st.info("Para seguimiento semanal por KPI, elegí una sucursal (en consolidado se mezclarían bases).")
     else:
         kpis = sorted(df_week[df_week["Sucursal"] == sucursal]["KPI"].dropna().unique())
         kpi_sel = st.selectbox("KPI", kpis)
@@ -500,7 +509,7 @@ with tab3:
     g["Gap_fmt"]       = g.apply(lambda r: fmt_val(r["Tipo_KPI"], r["Gap"]), axis=1)
 
     st.dataframe(
-        g[["KPI","Tipo_KPI","Estado_Acum","Cumpl_Acum_fmt","Real_Acum_fmt","Obj_Acum_fmt","Gap_fmt"]],
+        g[["KPI", "Tipo_KPI", "Estado_Acum", "Cumpl_Acum_fmt", "Real_Acum_fmt", "Obj_Acum_fmt", "Gap_fmt"]],
         use_container_width=True,
         hide_index=True
     )
