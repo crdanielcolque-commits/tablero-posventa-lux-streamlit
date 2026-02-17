@@ -43,6 +43,24 @@ section[data-testid="stSidebar"] .block-container {padding-top: 1.1rem;}
   background: white;
 }
 .metric-sub {opacity: 0.72; font-size: 0.9rem; margin-top: 6px;}
+
+/* ✅ Multiselect chips (aperturas) -> verde suave (NO alerta) */
+section[data-testid="stSidebar"] div[data-baseweb="tag"]{
+  background-color: #E8F5E9 !important;
+  border: 1px solid #B7E1C1 !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="tag"] span{
+  color: #1B5E20 !important;
+  font-weight: 700 !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="tag"] svg{
+  color: #1B5E20 !important;
+  fill: #1B5E20 !important;
+}
+section[data-testid="stSidebar"] div[data-baseweb="tag"]:hover{
+  background-color: #DFF2E3 !important;
+  border-color: #9ED3AD !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -323,7 +341,12 @@ st.sidebar.title("Filtros obligatorios")
 semanas = sorted(df_week["Semana_Num"].dropna().unique())
 sucursales = sorted(df_week["Sucursal"].dropna().unique())
 
-semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=0 if len(semanas) else 0)
+# ✅ Semana por defecto: 1 si existe, si no la menor disponible
+default_semana = 0
+if 1 in semanas:
+    default_semana = semanas.index(1)
+
+semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=default_semana)
 sucursal = st.sidebar.selectbox("Sucursal", ["TODAS (Consolidado)"] + sucursales)
 
 df_last_suc = df_week[df_week["Semana_Num"] == semana_corte].copy()
@@ -615,7 +638,7 @@ with tab2:
         st.plotly_chart(fig, use_container_width=True)
 
 # ==========================
-# TAB 3 — Gestión (con filtro sucursal + Pareto WOW)
+# TAB 3 — Gestión (con filtro sucursal + Drivers del desvío)
 # ==========================
 with tab3:
     st.markdown("### 🧩 Gestión (desvíos acumulados)")
@@ -661,51 +684,63 @@ with tab3:
         hide_index=True
     )
 
+    # ✅ REEMPLAZO "PARETO" por Drivers del desvío (sí aporta)
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-    st.markdown("### 📉 Pareto de desvíos (Top)")
+    st.markdown("### 🎯 Drivers del desvío (qué explica el gap)")
 
-    c1, c2, c3 = st.columns([1.2, 1.6, 1])
+    c1, c2, c3, c4 = st.columns([1.2, 1.8, 1, 1])
     with c1:
-        tipo_pareto = st.selectbox("Tipo (Pareto)", ["$", "Q"], index=0)
+        tipo_drv = st.selectbox("Tipo", ["$", "Q"], index=0, key="drv_tipo")
     with c2:
-        kpi_pareto = st.selectbox("KPI (Pareto)", sorted(g["KPI"].dropna().unique().tolist()), index=0)
+        kpi_drv = st.selectbox("KPI", sorted(g["KPI"].dropna().unique().tolist()), index=0, key="drv_kpi")
     with c3:
-        top_n = st.selectbox("Top (Pareto)", [5, 10, 15, 20], index=1)
+        top_n = st.selectbox("Top", [5, 10, 15, 20], index=1, key="drv_top")
+    with c4:
+        solo_gap_pos = st.checkbox("Solo gap positivo", value=True, key="drv_pos")
 
-    gp = g[(g["Tipo_KPI"] == tipo_pareto) & (g["KPI"] == kpi_pareto)].copy()
+    gp = g[(g["Tipo_KPI"] == tipo_drv) & (g["KPI"] == kpi_drv)].copy()
     gp = gp[(pd.notna(gp["Obj_Acum"])) & (gp["Obj_Acum"] > 0)].copy()
 
+    # Gap: Obj - Real (positivo = faltante)
     gp["Gap"] = gp["Obj_Acum"] - gp["Real_Acum"]
-    gp = gp.sort_values("Gap", ascending=False).head(top_n).copy()
+    if solo_gap_pos:
+        gp = gp[gp["Gap"] > 0].copy()
 
-    if len(gp):
-        gp = gp[gp["Gap"].notna()].copy()
-        gp["Acum"] = gp["Gap"].cumsum()
-        total = gp["Gap"].sum() if gp["Gap"].sum() != 0 else 1
-        gp["Acum_%"] = gp["Acum"] / total
-
-        figp = px.bar(
-            gp,
-            x="Gap", y="Apertura", orientation="h",
-            text=gp["Gap"].apply(lambda v: money_fmt(v) if tipo_pareto=="$" else num_fmt(v))
-        )
-        figp.update_layout(yaxis_title="Apertura", xaxis_title="Gap (Obj - Real)", height=460)
-
-        # Línea acumulada sobre el mismo gráfico (overlay)
-        line = px.line(gp, x="Acum_%", y="Apertura")
-        for tr in line.data:
-            tr.update(xaxis="x2")
-
-        figp.update_layout(
-            xaxis2=dict(
-                overlaying="x",
-                side="top",
-                tickformat=".0%",
-                title="Acumulado %",
-                range=[0, 1.0],
-            )
-        )
-        figp.add_traces(line.data)
-        st.plotly_chart(figp, use_container_width=True)
+    if len(gp) == 0:
+        st.info("No hay desvíos para mostrar con los filtros actuales.")
     else:
-        st.info("No hay desvíos para graficar con los filtros actuales.")
+        gap_total = float(gp["Gap"].sum())
+        gap_total_safe = gap_total if gap_total != 0 else 1.0
+
+        gp["Aporte_%"] = gp["Gap"] / gap_total_safe
+        gp = gp.sort_values("Gap", ascending=False).head(top_n).copy()
+
+        v_gap = money_fmt(gap_total) if tipo_drv == "$" else num_fmt(gap_total)
+        metric_box("Gap total (Obj - Real)", v_gap, f"KPI: <b>{kpi_drv}</b> ({tipo_drv})")
+
+        gp_plot = gp.copy()
+        gp_plot["Gap_txt"] = gp_plot["Gap"].apply(lambda v: money_fmt(v) if tipo_drv=="$" else num_fmt(v))
+        gp_plot["Aporte_txt"] = gp_plot["Aporte_%"].apply(lambda v: f"{v*100:.1f}%")
+        gp_plot = gp_plot.sort_values("Gap", ascending=True)
+
+        figd = px.bar(
+            gp_plot,
+            x="Gap",
+            y="Apertura",
+            orientation="h",
+            text=gp_plot["Gap_txt"] + "  (" + gp_plot["Aporte_txt"] + ")"
+        )
+        figd.update_layout(
+            height=420,
+            xaxis_title="Gap (Obj - Real)  |  (Aporte al gap total)",
+            yaxis_title="Apertura"
+        )
+        st.plotly_chart(figd, use_container_width=True)
+
+        tbl = gp[["Apertura","Estado_Acum","Cumpl_Acum","Real_Acum","Obj_Acum","Gap","Aporte_%"]].copy()
+        tbl["Cumpl_Acum"] = tbl["Cumpl_Acum"].apply(pct_fmt_ratio)
+        tbl["Real_Acum"] = tbl["Real_Acum"].apply(lambda v: money_fmt(v) if tipo_drv=="$" else num_fmt(v))
+        tbl["Obj_Acum"]  = tbl["Obj_Acum"].apply(lambda v: money_fmt(v) if tipo_drv=="$" else num_fmt(v))
+        tbl["Gap"]       = tbl["Gap"].apply(lambda v: money_fmt(v) if tipo_drv=="$" else num_fmt(v))
+        tbl["Aporte_%"]  = tbl["Aporte_%"].apply(lambda v: f"{v*100:.1f}%")
+        st.dataframe(tbl, use_container_width=True, hide_index=True)
