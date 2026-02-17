@@ -19,7 +19,7 @@ EXCEL_LOCAL = "base_posventa.xlsx"
 # ==========================
 # ESTILO
 # ==========================
-st.markdown("""
+st.markdown(r"""
 <style>
 .block-container {padding-top: 1.1rem; padding-bottom: 2rem;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1.1rem;}
@@ -44,22 +44,48 @@ section[data-testid="stSidebar"] .block-container {padding-top: 1.1rem;}
 }
 .metric-sub {opacity: 0.72; font-size: 0.9rem; margin-top: 6px;}
 
-/* ✅ Multiselect chips (aperturas) -> verde suave (NO alerta) */
-section[data-testid="stSidebar"] div[data-baseweb="tag"]{
+/* =========================================================
+   ✅ Multiselect "chips" (tags) -> VERDE SUAVE
+   (Streamlit cambia la estructura según versión/tema, por eso
+   atacamos varias rutas con !important)
+   ========================================================= */
+
+/* BaseWeb tag (común) */
+section[data-testid="stSidebar"] div[data-baseweb="tag"],
+section[data-testid="stSidebar"] span[data-baseweb="tag"],
+section[data-testid="stSidebar"] div[data-baseweb="tag"] > span,
+section[data-testid="stSidebar"] div[data-baseweb="tag"] > div {
   background-color: #E8F5E9 !important;
   border: 1px solid #B7E1C1 !important;
+  box-shadow: none !important;
 }
-section[data-testid="stSidebar"] div[data-baseweb="tag"] span{
+
+/* Texto dentro del chip */
+section[data-testid="stSidebar"] div[data-baseweb="tag"] * ,
+section[data-testid="stSidebar"] span[data-baseweb="tag"] * {
   color: #1B5E20 !important;
   font-weight: 700 !important;
 }
-section[data-testid="stSidebar"] div[data-baseweb="tag"] svg{
+
+/* Botón X / íconos del chip */
+section[data-testid="stSidebar"] div[data-baseweb="tag"] svg,
+section[data-testid="stSidebar"] span[data-baseweb="tag"] svg {
   color: #1B5E20 !important;
   fill: #1B5E20 !important;
 }
-section[data-testid="stSidebar"] div[data-baseweb="tag"]:hover{
+
+/* Hover */
+section[data-testid="stSidebar"] div[data-baseweb="tag"]:hover,
+section[data-testid="stSidebar"] span[data-baseweb="tag"]:hover {
   background-color: #DFF2E3 !important;
   border-color: #9ED3AD !important;
+}
+
+/* Fallback adicional: algunos themes pintan el tag como "pill" dentro del multiselect */
+section[data-testid="stSidebar"] div[role="listbox"] + div div[role="button"]{
+  background-color: #E8F5E9 !important;
+  border: 1px solid #B7E1C1 !important;
+  color: #1B5E20 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -341,7 +367,6 @@ st.sidebar.title("Filtros obligatorios")
 semanas = sorted(df_week["Semana_Num"].dropna().unique())
 sucursales = sorted(df_week["Sucursal"].dropna().unique())
 
-# ✅ Semana por defecto: 1 si existe, si no la menor disponible
 default_semana = 0
 if 1 in semanas:
     default_semana = semanas.index(1)
@@ -442,7 +467,6 @@ with tab1:
         else:
             st.info("Servicios: sin objetivos válidos para aperturas seleccionadas.")
 
-    # ========= RANKING MACRO
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.markdown("### 🏁 Ranking por sucursal (Macro)")
 
@@ -492,9 +516,8 @@ with tab1:
         else:
             st.info("No hay ranking macro de Servicios con aperturas seleccionadas.")
 
-    # ========= MICRO PRO (selector + topN + orden perfecto)
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-    st.markdown("## 🎯 Micro PRO — ranking sucursal + apertura")
+    st.markdown("## 🎯 Micro — ranking sucursal + apertura")
 
     cA, cB, cC, cD = st.columns([1.2, 1.2, 1, 1])
     with cA:
@@ -638,7 +661,7 @@ with tab2:
         st.plotly_chart(fig, use_container_width=True)
 
 # ==========================
-# TAB 3 — Gestión (con filtro sucursal + Drivers del desvío)
+# TAB 3 — Gestión (con filtro sucursal + Drivers)
 # ==========================
 with tab3:
     st.markdown("### 🧩 Gestión (desvíos acumulados)")
@@ -684,7 +707,6 @@ with tab3:
         hide_index=True
     )
 
-    # ✅ REEMPLAZO "PARETO" por Drivers del desvío (sí aporta)
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.markdown("### 🎯 Drivers del desvío (qué explica el gap)")
 
@@ -701,7 +723,6 @@ with tab3:
     gp = g[(g["Tipo_KPI"] == tipo_drv) & (g["KPI"] == kpi_drv)].copy()
     gp = gp[(pd.notna(gp["Obj_Acum"])) & (gp["Obj_Acum"] > 0)].copy()
 
-    # Gap: Obj - Real (positivo = faltante)
     gp["Gap"] = gp["Obj_Acum"] - gp["Real_Acum"]
     if solo_gap_pos:
         gp = gp[gp["Gap"] > 0].copy()
