@@ -253,7 +253,7 @@ with tab1:
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
     d_srv = apply_obj0_filter(d_srv)
 
-    def macro_cards(d, title):
+    def macro_cards(d):
         real = d["Real_val"].sum()
         obj  = d["Obj_val"].sum()
         c    = safe_ratio(real, obj)
@@ -265,10 +265,10 @@ with tab1:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
-        macro_cards(d_rep, "REPUESTOS")
+        macro_cards(d_rep)
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
-        macro_cards(d_srv, "SERVICIOS")
+        macro_cards(d_srv)
 
     st.markdown("---")
     st.markdown("### Aperturas — micro (cumplimiento acumulado)")
@@ -394,6 +394,3 @@ with tab3:
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10))
         fig.update_traces(textposition="inside")
         st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-    st.info("✅ Si antes veías Real/Obj en 0 era por el formato AR de números. Este build lo corrige.")
