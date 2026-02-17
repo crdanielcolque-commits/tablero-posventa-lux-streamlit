@@ -5,10 +5,13 @@ import streamlit as st
 import plotly.express as px
 import gdown
 
+# ==========================
+# CONFIG PÁGINA
+# ==========================
 st.set_page_config(page_title="Tablero Posventa", layout="wide")
 
 # ==========================
-# CONFIG DRIVE
+# CONFIG DRIVE (TU ARCHIVO)
 # ==========================
 DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"
 EXCEL_LOCAL = "base_posventa.xlsx"
@@ -44,7 +47,7 @@ section[data-testid="stSidebar"] .block-container {padding-top: 1.1rem;}
 """, unsafe_allow_html=True)
 
 # ==========================
-# Helpers
+# HELPERS
 # ==========================
 def _norm(s: str) -> str:
     s = str(s).strip().lower()
@@ -107,7 +110,7 @@ def estado_por_umbral(cumpl, umbral_amar=0.90, umbral_verde=1.00):
         return "Amarillo"
     return "Rojo"
 
-# ✅ PARSER NUMÉRICO ARGENTINA
+# ✅ PARSER NUMÉRICO (ARG)
 def to_number_ar(s):
     if pd.isna(s):
         return None
@@ -164,7 +167,7 @@ def metric_box(title, value, sub_html=""):
     """, unsafe_allow_html=True)
 
 # ==========================
-# Carga desde Google Sheets
+# CARGA DESDE GOOGLE SHEETS (XLSX)
 # ==========================
 @st.cache_data(show_spinner=True, ttl=300)
 def load_from_drive():
@@ -233,7 +236,6 @@ def build_kpi_week(df_raw: pd.DataFrame, schema: dict) -> pd.DataFrame:
     df["Real_val"] = df.apply(lambda r: r[c["real_$"]] if r[c["tipo_kpi"]] == "$" else r[c["real_q"]], axis=1)
     df["Obj_val"]  = df.apply(lambda r: r[c["obj_$"]]  if r[c["tipo_kpi"]] == "$" else r[c["obj_q"]], axis=1)
 
-    # Apertura sólo para Repuestos/Servicios (si existe categoria_kpi)
     if c["categoria_kpi"]:
         df["Apertura"] = df.apply(
             lambda r: r[c["categoria_kpi"]] if str(r[c["kpi"]]).strip().lower() in ["repuestos","servicios"] else "TOTAL",
@@ -300,7 +302,7 @@ def segment_metrics(df_seg):
     return real, obj, cump, margen, margen_pct
 
 # ==========================
-# CARGA
+# CARGA + NORMALIZA
 # ==========================
 df_raw, dim_kpi_raw = load_from_drive()
 schema = resolve_schema(df_raw)
@@ -321,7 +323,6 @@ st.sidebar.title("Filtros obligatorios")
 semanas = sorted(df_week["Semana_Num"].dropna().unique())
 sucursales = sorted(df_week["Sucursal"].dropna().unique())
 
-# ✅ default en Semana 1 (la primera disponible)
 semana_corte = st.sidebar.selectbox("Semana corte", semanas, index=0 if len(semanas) else 0)
 sucursal = st.sidebar.selectbox("Sucursal", ["TODAS (Consolidado)"] + sucursales)
 
@@ -343,7 +344,7 @@ rep_sel = st.sidebar.multiselect("Repuestos: aperturas incluidas", options=rep_a
 srv_sel = st.sidebar.multiselect("Servicios: aperturas incluidas", options=srv_aperturas, default=srv_aperturas)
 
 st.sidebar.markdown("---")
-rank_metric = st.sidebar.selectbox("Ranking por sucursal (macro)", ["Cumplimiento %", "Real (monto)"], index=0)
+rank_metric = st.sidebar.selectbox("Ranking (macro y micro)", ["Cumplimiento %", "Real (monto)"], index=0)
 
 # ==========================
 # HEADER
@@ -360,7 +361,6 @@ with tab1:
     rep = df_last[(df_last["KPI"]=="Repuestos") & (df_last["Tipo_KPI"]=="$")].copy()
     srv = df_last[(df_last["KPI"]=="Servicios") & (df_last["Tipo_KPI"]=="$")].copy()
 
-    # Sólo aperturas seleccionadas (para construir el total)
     rep_total = rep[rep["Apertura"].isin(rep_sel)].copy() if rep_sel else rep[rep["Apertura"]!="TOTAL"].copy()
     srv_total = srv[srv["Apertura"].isin(srv_sel)].copy() if srv_sel else srv[srv["Apertura"]!="TOTAL"].copy()
 
@@ -371,7 +371,6 @@ with tab1:
     srv_estado = estado_por_umbral(srv_cump)
 
     c1, c2 = st.columns(2, gap="large")
-
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
         a,b,c = st.columns(3)
@@ -381,21 +380,17 @@ with tab1:
 
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.markdown("#### Aperturas (Repuestos) — micro")
-
-        rep_micro = rep_total.copy()
-        rep_micro["Cumpl_Acum_plot"] = rep_micro["Cumpl_Acum"]
-        rep_micro = rep_micro.dropna(subset=["Cumpl_Acum_plot"]).copy()
-
+        rep_micro = rep_total.dropna(subset=["Cumpl_Acum"]).copy()
+        rep_micro = rep_micro[(pd.notna(rep_micro["Obj_Acum"])) & (rep_micro["Obj_Acum"] > 0)].copy()
         if len(rep_micro):
-            rep_micro = rep_micro.sort_values("Cumpl_Acum_plot", ascending=False).copy()
+            rep_micro = rep_micro.sort_values("Cumpl_Acum", ascending=False).copy()
             order = rep_micro["Apertura"].tolist()
             fig = px.bar(
-                rep_micro,
-                x="Cumpl_Acum_plot", y="Apertura", orientation="h",
-                text=rep_micro["Cumpl_Acum_plot"].apply(lambda x: f"{x*100:.1f}%"),
+                rep_micro, x="Cumpl_Acum", y="Apertura", orientation="h",
+                text=rep_micro["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%"),
                 category_orders={"Apertura": order}
             )
-            fig.update_layout(xaxis_tickformat=".0%", yaxis_title="Apertura")
+            fig.update_layout(xaxis_tickformat=".0%", yaxis_title="Apertura", height=360)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Repuestos: sin objetivos válidos para aperturas seleccionadas.")
@@ -409,25 +404,22 @@ with tab1:
 
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.markdown("#### Aperturas (Servicios) — micro")
-
-        srv_micro = srv_total.copy()
-        srv_micro["Cumpl_Acum_plot"] = srv_micro["Cumpl_Acum"]
-        srv_micro = srv_micro.dropna(subset=["Cumpl_Acum_plot"]).copy()
-
+        srv_micro = srv_total.dropna(subset=["Cumpl_Acum"]).copy()
+        srv_micro = srv_micro[(pd.notna(srv_micro["Obj_Acum"])) & (srv_micro["Obj_Acum"] > 0)].copy()
         if len(srv_micro):
-            srv_micro = srv_micro.sort_values("Cumpl_Acum_plot", ascending=False).copy()
+            srv_micro = srv_micro.sort_values("Cumpl_Acum", ascending=False).copy()
             order = srv_micro["Apertura"].tolist()
             fig2 = px.bar(
-                srv_micro,
-                x="Cumpl_Acum_plot", y="Apertura", orientation="h",
-                text=srv_micro["Cumpl_Acum_plot"].apply(lambda x: f"{x*100:.1f}%"),
+                srv_micro, x="Cumpl_Acum", y="Apertura", orientation="h",
+                text=srv_micro["Cumpl_Acum"].apply(lambda x: f"{x*100:.1f}%"),
                 category_orders={"Apertura": order}
             )
-            fig2.update_layout(xaxis_tickformat=".0%", yaxis_title="Apertura")
+            fig2.update_layout(xaxis_tickformat=".0%", yaxis_title="Apertura", height=360)
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("Servicios: sin objetivos válidos para aperturas seleccionadas.")
 
+    # ========= RANKING MACRO
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.markdown("### 🏁 Ranking por sucursal (Macro)")
 
@@ -444,36 +436,125 @@ with tab1:
 
     rc1, rc2 = st.columns(2, gap="large")
     with rc1:
-        st.markdown("#### Repuestos — por sucursal")
+        st.markdown("#### Repuestos — por sucursal (macro)")
         if len(rep_rank_suc):
-            y = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
-            rep_rank_suc = rep_rank_suc.sort_values(y, ascending=False).copy()
+            xcol = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
+            rep_rank_suc = rep_rank_suc.sort_values(xcol, ascending=False).copy()
             order = rep_rank_suc["Sucursal"].tolist()
             fig3 = px.bar(
-                rep_rank_suc, x=y, y="Sucursal", orientation="h",
-                text=rep_rank_suc[y].apply(lambda v: f"{v*100:.1f}%" if y=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
+                rep_rank_suc, x=xcol, y="Sucursal", orientation="h",
+                text=rep_rank_suc[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
                 category_orders={"Sucursal": order}
             )
-            if y=="Cumpl_Acum": fig3.update_layout(xaxis_tickformat=".0%")
+            if xcol=="Cumpl_Acum": fig3.update_layout(xaxis_tickformat=".0%")
+            fig3.update_layout(height=380)
             st.plotly_chart(fig3, use_container_width=True)
         else:
-            st.info("No hay datos de ranking de Repuestos con aperturas seleccionadas.")
+            st.info("No hay ranking macro de Repuestos con aperturas seleccionadas.")
 
     with rc2:
-        st.markdown("#### Servicios — por sucursal")
+        st.markdown("#### Servicios — por sucursal (macro)")
         if len(srv_rank_suc):
-            y = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
-            srv_rank_suc = srv_rank_suc.sort_values(y, ascending=False).copy()
+            xcol = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
+            srv_rank_suc = srv_rank_suc.sort_values(xcol, ascending=False).copy()
             order = srv_rank_suc["Sucursal"].tolist()
             fig4 = px.bar(
-                srv_rank_suc, x=y, y="Sucursal", orientation="h",
-                text=srv_rank_suc[y].apply(lambda v: f"{v*100:.1f}%" if y=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
+                srv_rank_suc, x=xcol, y="Sucursal", orientation="h",
+                text=srv_rank_suc[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" and pd.notna(v) else money_fmt(v)),
                 category_orders={"Sucursal": order}
             )
-            if y=="Cumpl_Acum": fig4.update_layout(xaxis_tickformat=".0%")
+            if xcol=="Cumpl_Acum": fig4.update_layout(xaxis_tickformat=".0%")
+            fig4.update_layout(height=380)
             st.plotly_chart(fig4, use_container_width=True)
         else:
-            st.info("No hay datos de ranking de Servicios con aperturas seleccionadas.")
+            st.info("No hay ranking macro de Servicios con aperturas seleccionadas.")
+
+    # ========= MICRO PRO (selector + topN + orden perfecto)
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.markdown("## 🎯 Micro PRO — ranking sucursal + apertura")
+
+    cA, cB, cC, cD = st.columns([1.2, 1.2, 1, 1])
+    with cA:
+        rep_micro_mode = st.selectbox("Repuestos (micro)", ["Todas las aperturas", "Elegir 1 apertura"], index=0)
+    with cB:
+        srv_micro_mode = st.selectbox("Servicios (micro)", ["Todas las aperturas", "Elegir 1 apertura"], index=0)
+    with cC:
+        top_n_micro = st.selectbox("Top N", [5, 10, 15, 20], index=1)
+    with cD:
+        ver_ceros = st.checkbox("Mostrar 0% (obj>0 y real=0)", value=True)
+
+    rep_ap_sel = None
+    srv_ap_sel = None
+    if rep_micro_mode == "Elegir 1 apertura":
+        rep_ap_sel = st.selectbox("Apertura Repuestos", rep_sel if rep_sel else rep_aperturas, index=0)
+    if srv_micro_mode == "Elegir 1 apertura":
+        srv_ap_sel = st.selectbox("Apertura Servicios", srv_sel if srv_sel else srv_aperturas, index=0)
+
+    def micro_rank_chart(df_rank_base, kpi_name, aperturas_incluidas, modo, apertura_unica, top_n, tipo="$"):
+        dfm = df_rank_base[
+            (df_rank_base["KPI"] == kpi_name) &
+            (df_rank_base["Tipo_KPI"] == tipo) &
+            (df_rank_base["Apertura"].isin(aperturas_incluidas))
+        ].copy()
+
+        if modo == "Elegir 1 apertura" and apertura_unica:
+            dfm = dfm[dfm["Apertura"] == apertura_unica].copy()
+
+        dfm = dfm[(pd.notna(dfm["Obj_Acum"])) & (dfm["Obj_Acum"] > 0)].copy()
+        if not ver_ceros:
+            dfm = dfm[dfm["Real_Acum"] > 0].copy()
+
+        xcol = "Cumpl_Acum" if rank_metric == "Cumplimiento %" else "Real_Acum"
+        dfm = dfm.dropna(subset=[xcol]).copy()
+
+        if not len(dfm):
+            return None
+
+        dfm["Etiqueta"] = dfm["Sucursal"].astype(str) + " — " + dfm["Apertura"].astype(str)
+        dfm = dfm.sort_values(xcol, ascending=False).head(top_n).copy()
+        order = dfm["Etiqueta"].tolist()
+
+        txt = dfm[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" else money_fmt(v))
+
+        fig = px.bar(
+            dfm, x=xcol, y="Etiqueta", orientation="h",
+            text=txt, category_orders={"Etiqueta": order}
+        )
+        if xcol == "Cumpl_Acum":
+            fig.update_layout(xaxis_tickformat=".0%")
+        fig.update_layout(yaxis_title="", height=420)
+        return fig
+
+    mc1, mc2 = st.columns(2, gap="large")
+    with mc1:
+        st.markdown("#### Repuestos — sucursal + apertura (micro)")
+        figm1 = micro_rank_chart(
+            df_rank_base=df_last_suc,
+            kpi_name="Repuestos",
+            aperturas_incluidas=rep_sel if rep_sel else rep_aperturas,
+            modo=rep_micro_mode,
+            apertura_unica=rep_ap_sel,
+            top_n=top_n_micro
+        )
+        if figm1:
+            st.plotly_chart(figm1, use_container_width=True)
+        else:
+            st.info("No hay datos micro de Repuestos con los filtros actuales.")
+
+    with mc2:
+        st.markdown("#### Servicios — sucursal + apertura (micro)")
+        figm2 = micro_rank_chart(
+            df_rank_base=df_last_suc,
+            kpi_name="Servicios",
+            aperturas_incluidas=srv_sel if srv_sel else srv_aperturas,
+            modo=srv_micro_mode,
+            apertura_unica=srv_ap_sel,
+            top_n=top_n_micro
+        )
+        if figm2:
+            st.plotly_chart(figm2, use_container_width=True)
+        else:
+            st.info("No hay datos micro de Servicios con los filtros actuales.")
 
 # ==========================
 # TAB 2 — KPIs resto
@@ -482,7 +563,6 @@ with tab2:
     st.markdown("### 📌 KPIs (resto) — Macro → Micro")
     st.markdown('<span class="small-muted">KPIs que NO son Repuestos/Servicios (incluye $ y Q).</span>', unsafe_allow_html=True)
 
-    # ✅ Lista de KPIs desde la fuente semanal (no desde consolidado)
     base = df_week[df_week["Semana_Num"] == semana_corte].copy()
     base = base[~base["KPI"].isin(["Repuestos","Servicios"])].copy()
 
@@ -492,7 +572,6 @@ with tab2:
     else:
         kpi_sel = st.selectbox("Elegí un KPI (resto)", kpis_resto, index=0)
 
-        # Construyo data según sucursal o consolidado
         if sucursal != "TODAS (Consolidado)":
             df_k = base[(base["Sucursal"] == sucursal) & (base["KPI"] == kpi_sel)].copy()
             df_k = df_k.groupby(["KPI","Tipo_KPI"], as_index=False).agg(Real_Acum=("Real_Acum","sum"), Obj_Acum=("Obj_Acum","sum"))
@@ -522,30 +601,50 @@ with tab2:
         rk = rk.groupby(["Sucursal","Tipo_KPI"], as_index=False).agg(Real_Acum=("Real_Acum","sum"), Obj_Acum=("Obj_Acum","sum"))
         rk["Cumpl_Acum"] = rk.apply(lambda r: safe_ratio(r["Real_Acum"], r["Obj_Acum"]), axis=1)
 
-        y = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
-        rk = rk.sort_values(y, ascending=False).copy()
+        xcol = "Cumpl_Acum" if rank_metric=="Cumplimiento %" else "Real_Acum"
+        rk = rk.sort_values(xcol, ascending=False).copy()
         order = rk["Sucursal"].tolist()
 
         fig = px.bar(
-            rk, x=y, y="Sucursal", orientation="h",
-            text=rk[y].apply(lambda v: f"{v*100:.1f}%" if y=="Cumpl_Acum" and pd.notna(v) else (money_fmt(v) if tipo=="$" else num_fmt(v))),
+            rk, x=xcol, y="Sucursal", orientation="h",
+            text=rk[xcol].apply(lambda v: f"{v*100:.1f}%" if xcol=="Cumpl_Acum" and pd.notna(v) else (money_fmt(v) if tipo=="$" else num_fmt(v))),
             category_orders={"Sucursal": order}
         )
-        if y=="Cumpl_Acum": fig.update_layout(xaxis_tickformat=".0%")
+        if xcol=="Cumpl_Acum": fig.update_layout(xaxis_tickformat=".0%")
+        fig.update_layout(height=420)
         st.plotly_chart(fig, use_container_width=True)
 
 # ==========================
-# TAB 3 — Gestión
+# TAB 3 — Gestión (con filtro sucursal + Pareto WOW)
 # ==========================
 with tab3:
     st.markdown("### 🧩 Gestión (desvíos acumulados)")
-    g = df_last.copy()
+    st.markdown('<span class="small-muted">Filtro de gestión independiente del filtro global.</span>', unsafe_allow_html=True)
+
+    colf1, colf2 = st.columns([1.2, 3])
+    with colf1:
+        suc_gestion = st.selectbox("Sucursal (Gestión)", ["TODAS (Consolidado)"] + sucursales, index=0)
+    with colf2:
+        st.write("")
+
+    if suc_gestion != "TODAS (Consolidado)":
+        g = df_last_suc[df_last_suc["Sucursal"] == suc_gestion].copy()
+        g = g.groupby(["KPI","Apertura","Tipo_KPI"], as_index=False).agg(
+            Real_Acum=("Real_Acum","sum"),
+            Obj_Acum=("Obj_Acum","sum"),
+            Margen_Acum=("Margen_Acum","sum"),
+        )
+        g["Cumpl_Acum"] = g.apply(lambda r: safe_ratio(r["Real_Acum"], r["Obj_Acum"]), axis=1)
+        g = aplicar_reglas(g, dim_kpi)
+    else:
+        g = consolidar_todas(df_last_suc)
+        g = aplicar_reglas(g, dim_kpi)
+
     g["Gap"] = g["Obj_Acum"] - g["Real_Acum"]
 
     order_map = {"Rojo": 0, "Amarillo": 1, "Verde": 2, "—": 9}
     g["OrdenEstado"] = g["Estado_Acum"].map(order_map).fillna(9)
-
-    g = g.sort_values(["OrdenEstado","Gap"], ascending=[True, False])
+    g = g.sort_values(["OrdenEstado","Gap"], ascending=[True, False]).copy()
 
     def fmt_val(tipo, v):
         if pd.isna(v): return "—"
@@ -561,3 +660,52 @@ with tab3:
         use_container_width=True,
         hide_index=True
     )
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.markdown("### 📉 Pareto de desvíos (Top)")
+
+    c1, c2, c3 = st.columns([1.2, 1.6, 1])
+    with c1:
+        tipo_pareto = st.selectbox("Tipo (Pareto)", ["$", "Q"], index=0)
+    with c2:
+        kpi_pareto = st.selectbox("KPI (Pareto)", sorted(g["KPI"].dropna().unique().tolist()), index=0)
+    with c3:
+        top_n = st.selectbox("Top (Pareto)", [5, 10, 15, 20], index=1)
+
+    gp = g[(g["Tipo_KPI"] == tipo_pareto) & (g["KPI"] == kpi_pareto)].copy()
+    gp = gp[(pd.notna(gp["Obj_Acum"])) & (gp["Obj_Acum"] > 0)].copy()
+
+    gp["Gap"] = gp["Obj_Acum"] - gp["Real_Acum"]
+    gp = gp.sort_values("Gap", ascending=False).head(top_n).copy()
+
+    if len(gp):
+        gp = gp[gp["Gap"].notna()].copy()
+        gp["Acum"] = gp["Gap"].cumsum()
+        total = gp["Gap"].sum() if gp["Gap"].sum() != 0 else 1
+        gp["Acum_%"] = gp["Acum"] / total
+
+        figp = px.bar(
+            gp,
+            x="Gap", y="Apertura", orientation="h",
+            text=gp["Gap"].apply(lambda v: money_fmt(v) if tipo_pareto=="$" else num_fmt(v))
+        )
+        figp.update_layout(yaxis_title="Apertura", xaxis_title="Gap (Obj - Real)", height=460)
+
+        # Línea acumulada sobre el mismo gráfico (overlay)
+        line = px.line(gp, x="Acum_%", y="Apertura")
+        for tr in line.data:
+            tr.update(xaxis="x2")
+
+        figp.update_layout(
+            xaxis2=dict(
+                overlaying="x",
+                side="top",
+                tickformat=".0%",
+                title="Acumulado %",
+                range=[0, 1.0],
+            )
+        )
+        figp.add_traces(line.data)
+        st.plotly_chart(figp, use_container_width=True)
+    else:
+        st.info("No hay desvíos para graficar con los filtros actuales.")
