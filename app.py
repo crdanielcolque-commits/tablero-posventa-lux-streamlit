@@ -6,6 +6,10 @@
 # + Cap visual de % (ranking/charts) sin tocar cálculos
 # + Tabla auditoría (expander)
 # + Export Excel (detalle + acumulados)
+#
+# v2.3.1 (MOD) — KPI Cards Semanal + Acumulado + Proyección fin de mes + Mini evolución semanal
+#   - Para cada KPI: muestra Cumpl Semana, Cumpl Acum, Cumpl Proy EOM (y valores)
+#   - Sparkline semanal: Cumpl Acum vs Cumpl Proy (cap visual opcional)
 # ============================================================
 
 import numpy as np
@@ -14,6 +18,7 @@ import streamlit as st
 import plotly.express as px
 import gdown
 from io import BytesIO
+from calendar import monthrange
 
 # ---------------------------
 # CONFIG
@@ -166,6 +171,184 @@ def hide_sidebar_css():
     """
 
 # ---------------------------
+# NUEVO: helpers proyección fin de mes + sparkline semanal
+# ---------------------------
+def month_bounds(ts: pd.Timestamp):
+    y, m = ts.year, ts.month
+    start = pd.Timestamp(y, m, 1)
+    end = pd.Timestamp(y, m, monthrange(y, m)[1])
+    return start, end
+
+def business_days_progress(month_start: pd.Timestamp, month_end: pd.Timestamp, cutoff_date: pd.Timestamp) -> float:
+    """Progreso 0..1 por días hábiles transcurridos hasta cutoff_date."""
+    all_bd = pd.bdate_range(month_start, month_end)
+    if len(all_bd) == 0:
+        return 0.0
+    cutoff = min(cutoff_date, month_end)
+    elapsed_bd = pd.bdate_range(month_start, cutoff)
+    prog = len(elapsed_bd) / len(all_bd)
+    return float(max(0.0, min(1.0, prog)))
+
+def kpi_weekly_series_for_scope(
+    df_scope_month: pd.DataFrame,
+    *,
+    cap_on: bool,
+    cap_val: float
+) -> pd.DataFrame:
+    """
+    Arma una serie semanal (Semana_Num) para un scope (un KPI o un segmento),
+    dentro de UN MES:
+      - Real_sem, Obj_sem
+      - Real_acum, Obj_acum
+      - Cumpl_sem, Cumpl_acum
+      - Obj_mes (suma Obj de todo el mes)
+      - Proy_real_eom (run-rate por días hábiles hasta cierre de semana)
+      - Cumpl_proy_eom
+      - versiones _plot con cap visual
+    """
+    if df_scope_month.empty:
+        return pd.DataFrame()
+
+    # Orden y agregación semanal
+    g = df_scope_month.groupby("Semana_Num", as_index=False).agg(
+        Real_sem=("Real_val", "sum"),
+        Obj_sem=("Obj_val", "sum"),
+        CierreSemana=("Fecha", "max")
+    ).sort_values("Semana_Num")
+
+    g["Real_acum"] = g["Real_sem"].cumsum()
+    g["Obj_acum"]  = g["Obj_sem"].cumsum()
+
+    g["Cumpl_sem"]  = g.apply(lambda r: safe_ratio(r["Real_sem"], r["Obj_sem"]), axis=1)
+    g["Cumpl_acum"] = g.apply(lambda r: safe_ratio(r["Real_acum"], r["Obj_acum"]), axis=1)
+
+    # Objetivo mes = suma objetivos del mes completo (no del corte)
+    obj_mes = float(df_scope_month["Obj_val"].sum())
+    g["Obj_mes"] = obj_mes
+
+    # Proyección EOM por días hábiles
+    month_ref = pd.to_datetime(df_scope_month["Fecha"].max())
+    m_start, m_end = month_bounds(month_ref)
+
+    g["Avance_mes"] = g["CierreSemana"].apply(lambda d: business_days_progress(m_start, m_end, pd.to_datetime(d)))
+    g["Avance_mes"] = g["Avance_mes"].replace(0, np.nan)
+
+    g["Proy_real_eom"] = g["Real_acum"] / g["Avance_mes"]
+    g["Cumpl_proy_eom"] = g.apply(lambda r: safe_ratio(r["Proy_real_eom"], r["Obj_mes"]), axis=1)
+
+    # Cap visual SOLO para el gráfico
+    def cap_series(s):
+        if cap_on:
+            return s.clip(upper=cap_val)
+        return s
+
+    g["Cumpl_acum_plot"] = cap_series(g["Cumpl_acum"])
+    g["Cumpl_proy_plot"] = cap_series(g["Cumpl_proy_eom"])
+
+    return g
+
+def kpi_card_weekly_projection(
+    title: str,
+    *,
+    df_scope_month: pd.DataFrame,   # mes completo (con sucursal aplicada si corresponde)
+    semana_corte: int,
+    tipo: str,                      # "$" o "Q" (solo para formateo)
+    cap_on: bool,
+    cap_val: float
+):
+    """
+    Renderiza tarjeta:
+      - Real acumulado al corte
+      - Cumpl Semana (semana_corte)
+      - Cumpl Acum (<= semana_corte)
+      - Proy Real EOM + Cumpl Proy EOM
+      - Sparkline semanal (Cumpl_acum vs Cumpl_proy) hasta semana_corte
+    """
+    series = kpi_weekly_series_for_scope(df_scope_month, cap_on=cap_on, cap_val=cap_val)
+    if series.empty:
+        st.markdown(card_html(title, "—", "Sin datos", "—"), unsafe_allow_html=True)
+        return
+
+    s_cut = series[series["Semana_Num"] <= semana_corte].copy()
+    if s_cut.empty:
+        st.markdown(card_html(title, "—", f"Sin datos hasta Semana {semana_corte}", "—"), unsafe_allow_html=True)
+        return
+
+    last = s_cut.iloc[-1]
+
+    real_acum = float(last["Real_acum"])
+    obj_mes   = float(last["Obj_mes"]) if not pd.isna(last["Obj_mes"]) else 0.0
+
+    # Semana puntual
+    row_sem = s_cut[s_cut["Semana_Num"] == semana_corte]
+    if not row_sem.empty:
+        sem_real = float(row_sem.iloc[0]["Real_sem"])
+        sem_obj  = float(row_sem.iloc[0]["Obj_sem"])
+        sem_c    = safe_ratio(sem_real, sem_obj)
+    else:
+        sem_real, sem_obj, sem_c = np.nan, np.nan, np.nan
+
+    # Acum
+    acum_obj = float(last["Obj_acum"])
+    acum_c   = float(last["Cumpl_acum"]) if not pd.isna(last["Cumpl_acum"]) else np.nan
+
+    # Proyección
+    proy_real = float(last["Proy_real_eom"]) if not pd.isna(last["Proy_real_eom"]) else np.nan
+    proy_c    = float(last["Cumpl_proy_eom"]) if not pd.isna(last["Cumpl_proy_eom"]) else np.nan
+
+    est = estado(proy_c if not pd.isna(proy_c) else acum_c)
+
+    # Subtexto “como tu imagen”, pero con + semanal + proyección
+    if tipo == "$":
+        main_value = money(real_acum)
+        sub = (
+            f"Semana {semana_corte}: {money(sem_real)} / {money(sem_obj)} ({pct(sem_c)}) | "
+            f"Acum: {money(real_acum)} / {money(acum_obj)} ({pct(acum_c)}) | "
+            f"Proy EOM: {money(proy_real)} / {money(obj_mes)} ({pct(proy_c)})"
+        )
+    else:
+        main_value = qty(real_acum)
+        sub = (
+            f"Semana {semana_corte}: {qty(sem_real)} / {qty(sem_obj)} ({pct(sem_c)}) | "
+            f"Acum: {qty(real_acum)} / {qty(acum_obj)} ({pct(acum_c)}) | "
+            f"Proy EOM: {qty(proy_real)} / {qty(obj_mes)} ({pct(proy_c)})"
+        )
+
+    st.markdown(
+        card_html(title, main_value, sub, est),
+        unsafe_allow_html=True
+    )
+
+    # Sparkline (mini evolución semanal)
+    plot_df = s_cut[["Semana_Num", "Cumpl_acum_plot", "Cumpl_proy_plot"]].copy()
+    plot_df = plot_df.rename(columns={"Semana_Num": "Semana"})
+
+    m1 = plot_df[["Semana", "Cumpl_acum_plot"]].rename(columns={"Cumpl_acum_plot": "Cumpl"})
+    m1["Serie"] = "Acumulado"
+    m2 = plot_df[["Semana", "Cumpl_proy_plot"]].rename(columns={"Cumpl_proy_plot": "Cumpl"})
+    m2["Serie"] = "Proyectado"
+    spark = pd.concat([m1, m2], ignore_index=True)
+
+    # gráfico chico
+    fig = px.line(
+        spark,
+        x="Semana",
+        y="Cumpl",
+        color="Serie",
+        markers=False
+    )
+    fig.update_layout(
+        height=130,
+        margin=dict(l=10, r=10, t=10, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_title="",
+        yaxis_title="",
+    )
+    fig.update_yaxes(tickformat=".0%")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------------------------
 # LOAD
 # ---------------------------
 @st.cache_data(ttl=300)
@@ -196,6 +379,13 @@ if missing:
 # ---------------------------
 df["Semana_Num"] = parse_semana_num(df["Semana"])
 df = df[~df["Semana_Num"].isna()].copy()
+
+# Fecha a datetime
+df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+df = df[~df["Fecha"].isna()].copy()
+
+# Mes (para proyección fin de mes)
+df["Mes"] = df["Fecha"].dt.to_period("M").astype(str)
 
 # Parse AR numérico
 for c in ["Real_$","Costo_$","Margen_$","Margen_%","Real_Q","Objetivo_$","Objetivo_Q","Cumplimiento_%"]:
@@ -346,6 +536,19 @@ if sucursal != "TODAS (Consolidado)":
     df_cut = df_cut[df_cut["Sucursal"] == sucursal].copy()
 
 # ---------------------------
+# NUEVO: Mes de referencia (para proyección EOM)
+# Tomamos el mes del último dato disponible al corte.
+# ---------------------------
+if not df_cut.empty:
+    mes_ref = df_cut["Mes"].max()
+else:
+    mes_ref = df["Mes"].max()
+
+df_month = df[df["Mes"] == mes_ref].copy()
+if sucursal != "TODAS (Consolidado)":
+    df_month = df_month[df_month["Sucursal"] == sucursal].copy()
+
+# ---------------------------
 # Filtros P&L aperturas
 # ---------------------------
 def compute_openings_pl(dfc):
@@ -403,7 +606,7 @@ srv_sel = st.session_state["srv_sel"]
 # HEADER
 # ---------------------------
 st.title("Tablero Posventa — Macro → Micro (Semanal + Acumulado)")
-st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}**")
+st.caption(f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}** | Mes ref: **{mes_ref}**")
 
 tab1, tab2, tab3 = st.tabs(["🧩 P&L (Repuestos vs Servicios)", "📌 KPIs (resto)", "🧪 Gestión (desvíos)"])
 
@@ -497,19 +700,27 @@ with tab1:
     st.markdown("## 🧩 P&L — Macro → Micro")
     st.markdown("---")
 
-    d_pl = df_cut[df_cut["Tipo_KPI"]=="$"].copy()
+    # Mes completo (para proyección) + corte (para resto del tablero)
+    d_pl_month = df_month[df_month["Tipo_KPI"]=="$"].copy()
+    d_pl_cut   = df_cut[df_cut["Tipo_KPI"]=="$"].copy()
 
-    d_rep = d_pl[d_pl["KPI"].str.upper()=="REPUESTOS"].copy()
-    d_rep = d_rep[d_rep["Categoria_KPI"].isin(rep_sel)].copy()
+    d_rep_month = d_pl_month[d_pl_month["KPI"].str.upper()=="REPUESTOS"].copy()
+    d_rep_month = d_rep_month[d_rep_month["Categoria_KPI"].isin(rep_sel)].copy()
 
-    d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
-    d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
+    d_srv_month = d_pl_month[d_pl_month["KPI"].str.upper()=="SERVICIOS"].copy()
+    d_srv_month = d_srv_month[d_srv_month["Categoria_KPI"].isin(srv_sel)].copy()
 
-    # Resumen ejecutivo 1 línea
-    rep_real, rep_obj, rep_c, rep_est, _ = summarize_segment(d_rep, "$")
-    srv_real, srv_obj, srv_c, srv_est, _ = summarize_segment(d_srv, "$")
+    d_rep_cut = d_pl_cut[d_pl_cut["KPI"].str.upper()=="REPUESTOS"].copy()
+    d_rep_cut = d_rep_cut[d_rep_cut["Categoria_KPI"].isin(rep_sel)].copy()
 
-    driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
+    d_srv_cut = d_pl_cut[d_pl_cut["KPI"].str.upper()=="SERVICIOS"].copy()
+    d_srv_cut = d_srv_cut[d_srv_cut["Categoria_KPI"].isin(srv_sel)].copy()
+
+    # Resumen ejecutivo 1 línea (acumulado al corte)
+    rep_real, rep_obj, rep_c, rep_est, _ = summarize_segment(d_rep_cut, "$")
+    srv_real, srv_obj, srv_c, srv_est, _ = summarize_segment(d_srv_cut, "$")
+
+    driver = principal_driver_gap(pd.concat([d_rep_cut, d_srv_cut], ignore_index=True))
     if driver:
         driver_txt = f"Principal desvío: **{driver['KPI']} / {driver['Cat']}** (Gap {money(driver['Gap'])})"
     else:
@@ -522,23 +733,30 @@ with tab1:
         f"{driver_txt}"
     )
 
-    def macro_cards(d):
-        d2 = apply_obj0_filter(d, show_obj0)
-        real = d2["Real_val"].sum()
-        obj  = d2["Obj_val"].sum()
-        c    = safe_ratio(real, obj)
-        st.markdown(
-            card_html("Cumplimiento (Acum.)", pct(c), f"Real {money(real)} | Obj {money(obj)}", estado(c)),
-            unsafe_allow_html=True
-        )
-
+    # NUEVO: macro cards con semanal + acum + proyección + sparkline
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
-        macro_cards(d_rep)
+        d_rep_month_card = apply_obj0_filter(d_rep_month, show_obj0)
+        kpi_card_weekly_projection(
+            "Repuestos — Real (Acum.)",
+            df_scope_month=d_rep_month_card,
+            semana_corte=semana_corte,
+            tipo="$",
+            cap_on=cap_on,
+            cap_val=cap_val
+        )
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
-        macro_cards(d_srv)
+        d_srv_month_card = apply_obj0_filter(d_srv_month, show_obj0)
+        kpi_card_weekly_projection(
+            "Servicios — Real (Acum.)",
+            df_scope_month=d_srv_month_card,
+            semana_corte=semana_corte,
+            tipo="$",
+            cap_on=cap_on,
+            cap_val=cap_val
+        )
 
     st.markdown("---")
     st.markdown("### Aperturas — micro (cumplimiento acumulado)")
@@ -546,7 +764,7 @@ with tab1:
     l, r = st.columns(2)
     with l:
         st.markdown("**Repuestos — por apertura**")
-        g = micro_aperturas(apply_obj0_filter(d_rep, show_obj0), "$")
+        g = micro_aperturas(apply_obj0_filter(d_rep_cut, show_obj0), "$")
         if g.empty:
             st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
         else:
@@ -557,7 +775,7 @@ with tab1:
 
     with r:
         st.markdown("**Servicios — por apertura**")
-        g = micro_aperturas(apply_obj0_filter(d_srv, show_obj0), "$")
+        g = micro_aperturas(apply_obj0_filter(d_srv_cut, show_obj0), "$")
         if g.empty:
             st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
         else:
@@ -580,11 +798,11 @@ with tab1:
         show_zero_rank = st.checkbox("Mostrar 0% (Obj=0 y real=0)", value=False)
 
     # Rep micro ranking
-    rep_rank_base = d_rep.copy()
+    rep_rank_base = d_rep_cut.copy()
     if rep_micro_choice != "Todas las aperturas":
         rep_rank_base = rep_rank_base[rep_rank_base["Categoria_KPI"] == rep_micro_choice].copy()
 
-    srv_rank_base = d_srv.copy()
+    srv_rank_base = d_srv_cut.copy()
     if srv_micro_choice != "Todas las aperturas":
         srv_rank_base = srv_rank_base[srv_rank_base["Categoria_KPI"] == srv_micro_choice].copy()
 
@@ -614,11 +832,11 @@ with tab1:
     # Auditoría + Export
     st.markdown("---")
     with st.expander("🔎 Auditoría y export (P&L)", expanded=False):
-        # Detalle filtrado P&L
-        detail = pd.concat([d_rep, d_srv], ignore_index=True).copy()
+        # Detalle filtrado P&L (al corte)
+        detail = pd.concat([d_rep_cut, d_srv_cut], ignore_index=True).copy()
         detail = detail.sort_values(["Semana_Num","Sucursal","KPI","Categoria_KPI"], ascending=[True, True, True, True])
 
-        # Acumulado P&L por KPI/Categoria/Sucursal
+        # Acumulado P&L por KPI/Categoria/Sucursal (al corte)
         acum = detail.groupby(["KPI","Categoria_KPI","Sucursal"], as_index=False).agg(
             Real=("Real_val","sum"),
             Obj=("Obj_val","sum"),
@@ -645,16 +863,52 @@ with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
     st.markdown("---")
 
-    resto = df_cut[~df_cut["KPI"].str.upper().isin(["REPUESTOS","SERVICIOS"])].copy()
-    resto = apply_obj0_filter(resto, show_obj0)
+    resto_month = df_month[~df_month["KPI"].str.upper().isin(["REPUESTOS","SERVICIOS"])].copy()
+    resto_cut   = df_cut[~df_cut["KPI"].str.upper().isin(["REPUESTOS","SERVICIOS"])].copy()
 
-    kpis_resto = sorted(resto["KPI"].unique().tolist())
+    resto_month = apply_obj0_filter(resto_month, show_obj0)
+    resto_cut   = apply_obj0_filter(resto_cut, show_obj0)
+
+    # NUEVO: Tarjetas por KPI (semanal + acumulado + proyección + mini evolución)
+    st.markdown("### 🧩 Tarjetas KPI — Semana / Acum / Proyección (fin de mes)")
+    kpi_pairs = (
+        resto_month.groupby(["KPI","Tipo_KPI"], as_index=False)
+        .size()[["KPI","Tipo_KPI"]]
+        .sort_values(["Tipo_KPI","KPI"])
+    )
+
+    if kpi_pairs.empty:
+        st.info("No hay KPIs (resto) con Obj>0 en este mes.")
+    else:
+        # grilla 3 columnas
+        cols = st.columns(3)
+        for i, row in enumerate(kpi_pairs.itertuples(index=False)):
+            kpi_name = row.KPI
+            tipo_kpi = row.Tipo_KPI
+
+            scope_month = resto_month[(resto_month["KPI"] == kpi_name) & (resto_month["Tipo_KPI"] == tipo_kpi)].copy()
+
+            with cols[i % 3]:
+                kpi_card_weekly_projection(
+                    f"{kpi_name} ({tipo_kpi})",
+                    df_scope_month=scope_month,
+                    semana_corte=semana_corte,
+                    tipo=("$" if tipo_kpi == "$" else "Q"),
+                    cap_on=cap_on,
+                    cap_val=cap_val
+                )
+
+    st.markdown("---")
+
+    # Deep dive (se mantiene tu lógica original)
+    kpis_resto = sorted(resto_cut["KPI"].unique().tolist())
     if not kpis_resto:
         st.info("No hay KPIs (resto) con Obj>0 en este corte.")
     else:
+        st.markdown("### 🔍 Detalle (ranking por sucursal) — Elegí un KPI")
         kpi_sel = st.selectbox("Elegí un KPI (resto)", kpis_resto)
 
-        x = resto[resto["KPI"] == kpi_sel].copy()
+        x = resto_cut[resto_cut["KPI"] == kpi_sel].copy()
         tipos = sorted(x["Tipo_KPI"].unique().tolist())
 
         for t in tipos:
