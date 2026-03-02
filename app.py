@@ -1,9 +1,10 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.8
-# ✅ FIX: no mostrar HTML crudo debajo de totales (separar footer)
+# v2.3.9
+# ✅ Sin chips/estados de color (no ✅⚠️🔴, no ROJO/AMARILLO/VERDE)
 # ✅ Spark semanal con eje X en enteros (1,2,3,4...)
 # ✅ Orden: Cumplimiento por sucursal antes que Aperturas
+# ✅ Proyección fin de mes por DÍAS HÁBILES (run-rate acumulado)
 # ============================================================
 
 import numpy as np
@@ -90,29 +91,6 @@ def pct(x):
     except Exception:
         return "—"
 
-def estado(c):
-    if c is None or pd.isna(c):
-        return "—"
-    if c >= 1:
-        return "Verde"
-    if c >= 0.9:
-        return "Amarillo"
-    return "Rojo"
-
-def estado_icon(est_txt: str) -> str:
-    return {"Verde": "✅", "Amarillo": "⚠️", "Rojo": "🔴", "—": "—"}.get(est_txt, "—")
-
-def badge_estado_html(est):
-    icon = estado_icon(est)
-    color = {"Verde":"#198754", "Amarillo":"#d39e00", "Rojo":"#dc3545", "—":"#6c757d"}.get(est, "#6c757d")
-    bg    = {"Verde":"#d1e7dd", "Amarillo":"#fff3cd", "Rojo":"#f8d7da", "—":"#e9ecef"}.get(est, "#e9ecef")
-    return f"""
-    <span style="display:inline-block;padding:4px 10px;border-radius:999px;
-                 background:{bg};color:{color};font-weight:800;font-size:12px;border:1px solid {color}33;">
-        {icon} {est.upper()}
-    </span>
-    """
-
 def mini_kpi_html(label: str, value: str):
     return f"""
     <div style="display:inline-block;padding:6px 10px;border-radius:12px;
@@ -122,16 +100,15 @@ def mini_kpi_html(label: str, value: str):
     </div>
     """
 
-def footer_estado_kpi_html(estado_txt: str, label: str, value: str):
+def footer_kpi_only_html(label: str, value: str):
+    # ✅ Sin chip de estado (solo KPI visible)
     return f"""
     <div style="margin-top:10px;display:flex;gap:10px;align-items:center;justify-content:flex-start;flex-wrap:wrap;">
-        <div>{badge_estado_html(estado_txt)}</div>
         <div>{mini_kpi_html(label, value)}</div>
     </div>
     """
 
 def card_html_base(title, value, sub):
-    """Tarjeta base (sin HTML adicional en el sub)."""
     return f"""
     <div style="border:1px solid #eee;border-radius:14px;padding:16px;background:#fff;
                 box-shadow:0 2px 10px rgba(0,0,0,0.04);">
@@ -465,9 +442,8 @@ def summarize_segment(dseg: pd.DataFrame, tipo: str):
     real = dseg["Real_val"].sum()
     obj = dseg["Obj_val"].sum()
     c = safe_ratio(real, obj)
-    est = estado(c)
     sub = f"Real {(money(real) if tipo=='$' else qty(real))} | Obj {(money(obj) if tipo=='$' else qty(obj))}"
-    return real, obj, c, est, sub
+    return real, obj, c, sub
 
 def micro_aperturas(d: pd.DataFrame, tipo: str):
     g = d.groupby("Categoria_KPI", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
@@ -514,7 +490,7 @@ def principal_driver_gap(d_pl: pd.DataFrame):
     g["Gap"] = g["Obj"] - g["Real"]
     g = g.sort_values("Gap", ascending=False)
     row = g.iloc[0]
-    return {"KPI": str(row["KPI"]), "Cat": str(row["Categoria_KPI"]), "Gap": float(row["Gap"]), "Real": float(row["Real"]), "Obj": float(row["Obj"])}
+    return {"KPI": str(row["KPI"]), "Cat": str(row["Categoria_KPI"]), "Gap": float(row["Gap"])}
 
 def export_excel_bytes(detail_df: pd.DataFrame, acum_df: pd.DataFrame, name_detail="Detalle", name_acum="Acumulado"):
     output = BytesIO()
@@ -532,9 +508,7 @@ def proyectar_eom_runrate(real_acum: float) -> float:
 def spark_evolucion(df_scope_month: pd.DataFrame):
     if df_scope_month.empty:
         return
-
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
-
     g = x.groupby("Semana_Mes", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum")).sort_values("Semana_Mes")
     g["Real_acum"] = g["Real"].cumsum()
     g["Obj_acum"] = g["Obj"].cumsum()
@@ -544,11 +518,8 @@ def spark_evolucion(df_scope_month: pd.DataFrame):
     gg["Cumpl_plot"] = gg["Cumpl_acum"].clip(upper=cap_val) if cap_on else gg["Cumpl_acum"]
 
     fig = px.line(gg, x="Semana_Mes", y="Cumpl_plot", markers=False)
-
-    # ✅ eje X en enteros: 1,2,3,4...
     weeks = sorted([int(w) for w in gg["Semana_Mes"].dropna().unique().tolist()])
     fig.update_xaxes(tickmode="array", tickvals=weeks, dtick=1)
-
     fig.update_layout(height=120, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="", yaxis_title="")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
@@ -568,16 +539,17 @@ with tab1:
     d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
 
-    rep_real, rep_obj, rep_c, rep_est, _ = summarize_segment(d_rep, "$")
-    srv_real, srv_obj, srv_c, srv_est, _ = summarize_segment(d_srv, "$")
+    rep_real, rep_obj, rep_c, _ = summarize_segment(d_rep, "$")
+    srv_real, srv_obj, srv_c, _ = summarize_segment(d_srv, "$")
 
     driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
     driver_txt = f"Principal desvío: **{driver['KPI']} / {driver['Cat']}** (Gap {money(driver['Gap'])})" if driver else "Principal desvío: —"
 
+    # ✅ Resumen ejecutivo SIN iconos/colores
     st.info(
         f"**Resumen Ejecutivo:** "
-        f"Repuestos {pct(rep_c)} {estado_icon(rep_est)} | "
-        f"Servicios {pct(srv_c)} {estado_icon(srv_est)} | "
+        f"Repuestos {pct(rep_c)} | "
+        f"Servicios {pct(srv_c)} | "
         f"{driver_txt}"
     )
 
@@ -588,8 +560,6 @@ with tab1:
         c    = safe_ratio(real, obj)
 
         proy_real = proyectar_eom_runrate(real)
-        proy_c = safe_ratio(proy_real, obj) if not pd.isna(proy_real) else np.nan
-        est = estado(proy_c if not pd.isna(proy_c) else c)
 
         sub = (
             f"Real {money(real)} | Obj {money(obj)} | "
@@ -597,13 +567,8 @@ with tab1:
             f"Días: {('—' if pd.isna(dias_transc) else int(dias_transc))}/{('—' if pd.isna(dias_total_mes) else int(dias_total_mes))}"
         )
 
-        # ✅ Tarjeta base (sin HTML “crudo”)
         st.markdown(card_html_base(titulo, money(real), sub), unsafe_allow_html=True)
-
-        # ✅ Footer renderizado aparte (HTML OK)
-        st.markdown(footer_estado_kpi_html(est, "Cumpl. Acum.", pct(c)), unsafe_allow_html=True)
-
-        # Spark
+        st.markdown(footer_kpi_only_html("Cumpl. Acum.", pct(c)), unsafe_allow_html=True)
         spark_evolucion(df_scope_month_for_spark)
 
     c1, c2 = st.columns(2)
@@ -619,7 +584,6 @@ with tab1:
         srv_month = srv_month[srv_month["Categoria_KPI"].isin(srv_sel)].copy()
         macro_block(d_srv, "Servicios — Real (Acum.)", srv_month)
 
-    # Orden: primero Cumplimiento por sucursal
     st.markdown("---")
     st.markdown("### Cumplimiento por Sucursal — (acumulado)")
 
@@ -646,7 +610,6 @@ with tab1:
             fig.update_traces(textposition="inside")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Luego Aperturas
     st.markdown("---")
     st.markdown("### Aperturas — micro (cumplimiento acumulado)")
 
@@ -741,7 +704,7 @@ with tab1:
         )
 
 # ============================================================
-# TAB 2 — KPIs resto (SIN CAMBIOS respecto tu tablero base)
+# TAB 2 — KPIs resto (SIN CAMBIOS)
 # ============================================================
 with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
