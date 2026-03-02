@@ -1,11 +1,12 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.10
+# v2.3.11
 # ✅ Sin chips/estados de color
 # ✅ Spark semanal: % visible por semana (texto sobre cada punto)
 # ✅ Eje X semanas en enteros (1,2,3,4...)
 # ✅ Orden: Cumplimiento por sucursal antes que Aperturas
 # ✅ Proyección fin de mes por DÍAS HÁBILES (run-rate acumulado)
+# ✅ NUEVO: Tarjeta central TOTAL POSTVENTA (Repuestos + Servicios)
 # ============================================================
 
 import numpy as np
@@ -450,10 +451,7 @@ def micro_aperturas(d: pd.DataFrame, tipo: str):
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
     g = apply_cap_visual(g, cap_on, cap_val)
-    if tipo == "$":
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-    else:
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {qty(r['Real'])}/{qty(r['Obj'])}", axis=1)
+    g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
     return g
 
 def micro_sucursal(d: pd.DataFrame, tipo: str):
@@ -461,10 +459,7 @@ def micro_sucursal(d: pd.DataFrame, tipo: str):
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
     g = apply_cap_visual(g, cap_on, cap_val)
-    if tipo == "$":
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-    else:
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {qty(r['Real'])}/{qty(r['Obj'])}", axis=1)
+    g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
     return g
 
 def ranking_sucursal_apertura_micro(d: pd.DataFrame, tipo: str, top_n: int, show_zero: bool):
@@ -475,10 +470,7 @@ def ranking_sucursal_apertura_micro(d: pd.DataFrame, tipo: str, top_n: int, show
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False).head(top_n).copy()
     g = apply_cap_visual(g, cap_on, cap_val)
-    if tipo == "$":
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
-    else:
-        g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {qty(r['Real'])}/{qty(r['Obj'])}", axis=1)
+    g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
     g["key"] = g["Sucursal"].astype(str) + " — " + g["Categoria_KPI"].astype(str)
     return g
 
@@ -506,40 +498,24 @@ def proyectar_eom_runrate(real_acum: float) -> float:
     return (float(real_acum) / float(dias_transc)) * float(dias_total_mes)
 
 def spark_evolucion(df_scope_month: pd.DataFrame):
-    """
-    ✅ Ahora muestra Cumplimiento SEMANAL (Real_sem / Obj_sem)
-    ✅ y lo etiqueta (xx.x%) sobre cada semana.
-    """
     if df_scope_month.empty:
         return
 
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
+    g = x.groupby("Semana_Mes", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum")).sort_values("Semana_Mes")
 
-    g = x.groupby("Semana_Mes", as_index=False).agg(
-        Real=("Real_val","sum"),
-        Obj=("Obj_val","sum")
-    ).sort_values("Semana_Mes")
-
-    # Cumplimiento semanal
     g["Cumpl_sem"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl_sem"].isna()].copy()
 
     gg = g.copy()
     gg["Cumpl"] = gg["Cumpl_sem"]
     gg["Cumpl_plot"] = gg["Cumpl"].clip(upper=cap_val) if cap_on else gg["Cumpl"]
-
-    # Etiquetas visibles
     gg["txt"] = gg["Cumpl"].apply(pct)
 
     fig = px.line(gg, x="Semana_Mes", y="Cumpl_plot", markers=True, text="txt")
-
-    # Eje X entero
     weeks = sorted([int(w) for w in gg["Semana_Mes"].dropna().unique().tolist()])
     fig.update_xaxes(tickmode="array", tickvals=weeks, dtick=1)
-
-    # Texto arriba del punto
     fig.update_traces(mode="lines+markers+text", textposition="top center")
-
     fig.update_layout(height=150, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="", yaxis_title="")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
@@ -559,8 +535,13 @@ with tab1:
     d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
 
+    # Totales (para tarjeta central)
     rep_real, rep_obj, rep_c, _ = summarize_segment(d_rep, "$")
     srv_real, srv_obj, srv_c, _ = summarize_segment(d_srv, "$")
+
+    total_real = float(rep_real) + float(srv_real)
+    total_obj  = float(rep_obj) + float(srv_obj)
+    total_c    = safe_ratio(total_real, total_obj)
 
     driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
     driver_txt = f"Principal desvío: **{driver['KPI']} / {driver['Cat']}** (Gap {money(driver['Gap'])})" if driver else "Principal desvío: —"
@@ -569,15 +550,21 @@ with tab1:
         f"**Resumen Ejecutivo:** "
         f"Repuestos {pct(rep_c)} | "
         f"Servicios {pct(srv_c)} | "
+        f"Total Postventa {pct(total_c)} | "
         f"{driver_txt}"
     )
 
-    def macro_block(d, titulo, df_scope_month_for_spark):
-        d2 = apply_obj0_filter(d, show_obj0)
-        real = d2["Real_val"].sum()
-        obj  = d2["Obj_val"].sum()
-        c    = safe_ratio(real, obj)
+    def macro_block(d, titulo, df_scope_month_for_spark, force_real=None, force_obj=None):
+        d2 = apply_obj0_filter(d, show_obj0) if d is not None else None
 
+        if force_real is not None and force_obj is not None:
+            real = float(force_real)
+            obj  = float(force_obj)
+        else:
+            real = d2["Real_val"].sum()
+            obj  = d2["Obj_val"].sum()
+
+        c = safe_ratio(real, obj)
         proy_real = proyectar_eom_runrate(real)
 
         sub = (
@@ -588,14 +575,34 @@ with tab1:
 
         st.markdown(card_html_base(titulo, money(real), sub), unsafe_allow_html=True)
         st.markdown(footer_kpi_only_html("Cumpl. Acum.", pct(c)), unsafe_allow_html=True)
-        spark_evolucion(df_scope_month_for_spark)
+        if df_scope_month_for_spark is not None:
+            spark_evolucion(df_scope_month_for_spark)
 
-    c1, c2 = st.columns(2)
+    # 🔥 3 columnas: Repuestos | Total Postventa | Servicios
+    c1, c_mid, c2 = st.columns([1.0, 1.05, 1.0])
+
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
         rep_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="REPUESTOS")].copy()
         rep_month = rep_month[rep_month["Categoria_KPI"].isin(rep_sel)].copy()
         macro_block(d_rep, "Repuestos — Real (Acum.)", rep_month)
+
+    with c_mid:
+        st.markdown("### 🧩 TOTAL POSTVENTA (P&L)")
+        # para el spark del total: concateno rep_month + srv_month
+        rep_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="REPUESTOS")].copy()
+        rep_month = rep_month[rep_month["Categoria_KPI"].isin(rep_sel)].copy()
+        srv_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="SERVICIOS")].copy()
+        srv_month = srv_month[srv_month["Categoria_KPI"].isin(srv_sel)].copy()
+        total_month = pd.concat([rep_month, srv_month], ignore_index=True)
+
+        macro_block(
+            d=None,
+            titulo="Total Postventa — Real (Acum.)",
+            df_scope_month_for_spark=total_month,
+            force_real=total_real,
+            force_obj=total_obj
+        )
 
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
@@ -765,7 +772,7 @@ with tab2:
             g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
             g = apply_cap_visual(g, cap_on, cap_val)
             g["label"] = g.apply(
-                lambda r: f"{pct(r['Cumpl'])} | {(money(r['Real']) if t=='$' else qty(r['Real']))}/{(money(r['Obj']) if t=='$' else qty(r['Obj']))}",
+                lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}",
                 axis=1
             )
 
@@ -823,7 +830,7 @@ with tab3:
         show_n = st.selectbox("Top N desvíos", [10,20,30,50], index=1)
         gg = g.head(show_n).copy()
         gg["key"] = gg["KPI"].astype(str) + " — " + gg["Categoria_KPI"].astype(str) + " (" + gg["Tipo_KPI"].astype(str) + ")"
-        gg["label"] = gg.apply(lambda r: f"Gap {(money(r['Gap']) if r['Tipo_KPI']=='$' else qty(r['Gap']))} | {pct(r['Cumpl'])}", axis=1)
+        gg["label"] = gg.apply(lambda r: f"Gap {money(r['Gap'])} | {pct(r['Cumpl'])}", axis=1)
 
         fig = px.bar(gg, x="Gap", y="key", orientation="h", text="label")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Gap (Obj - Real)")
