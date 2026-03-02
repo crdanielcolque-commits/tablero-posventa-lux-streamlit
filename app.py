@@ -1,12 +1,13 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.11
+# v2.3.12
 # ✅ Sin chips/estados de color
 # ✅ Spark semanal: % visible por semana (texto sobre cada punto)
 # ✅ Eje X semanas en enteros (1,2,3,4...)
 # ✅ Orden: Cumplimiento por sucursal antes que Aperturas
 # ✅ Proyección fin de mes por DÍAS HÁBILES (run-rate acumulado)
-# ✅ NUEVO: Tarjeta central TOTAL POSTVENTA (Repuestos + Servicios)
+# ✅ Tarjeta central TOTAL POSTVENTA (Repuestos + Servicios)
+# ✅ NUEVO TAB: 🗓️ Hitos del mes (hoja "Resumen del mes")
 # ============================================================
 
 import numpy as np
@@ -50,6 +51,8 @@ def to_num_ar(x):
          .replace("\u00A0", "")
     )
 
+    # Nota: tu base combina formatos (a veces 1.234.567,89 / a veces 1,234,567.89)
+    # Esta función prioriza el caso con coma decimal si hay coma.
     if "," in s:
         s = s.replace(".", "")
         s = s.replace(",", ".")
@@ -175,17 +178,28 @@ def load_from_drive():
     gdown.download(url, EXCEL_LOCAL, quiet=True)
 
     xls = pd.ExcelFile(EXCEL_LOCAL)
+
+    # Base principal (primera hoja)
     df0 = pd.read_excel(xls, sheet_name=0)
     df0 = df0.loc[:, ~df0.columns.astype(str).str.match(r"^Unnamed")]
 
+    # Días hábiles
     try:
         df_dias = pd.read_excel(xls, sheet_name="Dias habiles")
+        df_dias = df_dias.loc[:, ~df_dias.columns.astype(str).str.match(r"^Unnamed")]
     except Exception:
         df_dias = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 
-    return df0, df_dias
+    # Resumen del mes (hitos)
+    try:
+        df_res = pd.read_excel(xls, sheet_name="Resumen del mes")
+        df_res = df_res.loc[:, ~df_res.columns.astype(str).str.match(r"^Unnamed")]
+    except Exception:
+        df_res = pd.DataFrame()
 
-df, df_dias_habiles = load_from_drive()
+    return df0, df_dias, df_res
+
+df, df_dias_habiles, df_resumen_mes = load_from_drive()
 
 # ---------------------------
 # VALIDACIÓN
@@ -241,9 +255,9 @@ for col in ["Mes","Semana","Dias habiles"]:
     if col not in df_dias_habiles.columns:
         df_dias_habiles[col] = np.nan
 
-df_dias_habiles["Mes_norm"] = df_dias_habiles["Mes"].apply(norm_text)
-df_dias_habiles["Semana"] = pd.to_numeric(df_dias_habiles["Semana"], errors="coerce").fillna(0).astype(int)
-df_dias_habiles["Dias habiles"] = pd.to_numeric(df_dias_habiles["Dias habiles"], errors="coerce").fillna(0).astype(float)
+df_dias_habiles["Mes_norm"] = df_dias_habiles["Mes"].apply(norm_text) if "Mes" in df_dias_habiles.columns else ""
+df_dias_habiles["Semana"] = pd.to_numeric(df_dias_habiles["Semana"], errors="coerce").fillna(0).astype(int) if "Semana" in df_dias_habiles.columns else 0
+df_dias_habiles["Dias habiles"] = pd.to_numeric(df_dias_habiles["Dias habiles"], errors="coerce").fillna(0).astype(float) if "Dias habiles" in df_dias_habiles.columns else 0.0
 
 st.markdown(chips_css_soft_green(), unsafe_allow_html=True)
 
@@ -433,7 +447,13 @@ st.caption(
     f"Días hábiles mes: **{(int(dias_total_mes) if not pd.isna(dias_total_mes) else '—')}**"
 )
 
-tab1, tab2, tab3 = st.tabs(["🧩 P&L (Repuestos vs Servicios)", "📌 KPIs (resto)", "🧪 Gestión (desvíos)"])
+# ✅ 4 tabs (nuevo: Hitos)
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🧩 P&L (Repuestos vs Servicios)",
+    "📌 KPIs (resto)",
+    "🧪 Gestión (desvíos)",
+    "🗓️ Hitos del mes"
+])
 
 # ============================================================
 # FUNCIONES
@@ -498,7 +518,7 @@ def proyectar_eom_runrate(real_acum: float) -> float:
     return (float(real_acum) / float(dias_transc)) * float(dias_total_mes)
 
 def spark_evolucion(df_scope_month: pd.DataFrame):
-    if df_scope_month.empty:
+    if df_scope_month is None or df_scope_month.empty:
         return
 
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
@@ -535,7 +555,6 @@ with tab1:
     d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
 
-    # Totales (para tarjeta central)
     rep_real, rep_obj, rep_c, _ = summarize_segment(d_rep, "$")
     srv_real, srv_obj, srv_c, _ = summarize_segment(d_srv, "$")
 
@@ -555,12 +574,11 @@ with tab1:
     )
 
     def macro_block(d, titulo, df_scope_month_for_spark, force_real=None, force_obj=None):
-        d2 = apply_obj0_filter(d, show_obj0) if d is not None else None
-
         if force_real is not None and force_obj is not None:
             real = float(force_real)
             obj  = float(force_obj)
         else:
+            d2 = apply_obj0_filter(d, show_obj0)
             real = d2["Real_val"].sum()
             obj  = d2["Obj_val"].sum()
 
@@ -575,10 +593,9 @@ with tab1:
 
         st.markdown(card_html_base(titulo, money(real), sub), unsafe_allow_html=True)
         st.markdown(footer_kpi_only_html("Cumpl. Acum.", pct(c)), unsafe_allow_html=True)
-        if df_scope_month_for_spark is not None:
-            spark_evolucion(df_scope_month_for_spark)
+        spark_evolucion(df_scope_month_for_spark)
 
-    # 🔥 3 columnas: Repuestos | Total Postventa | Servicios
+    # 3 columnas
     c1, c_mid, c2 = st.columns([1.0, 1.05, 1.0])
 
     with c1:
@@ -589,7 +606,6 @@ with tab1:
 
     with c_mid:
         st.markdown("### 🧩 TOTAL POSTVENTA (P&L)")
-        # para el spark del total: concateno rep_month + srv_month
         rep_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="REPUESTOS")].copy()
         rep_month = rep_month[rep_month["Categoria_KPI"].isin(rep_sel)].copy()
         srv_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="SERVICIOS")].copy()
@@ -730,7 +746,7 @@ with tab1:
         )
 
 # ============================================================
-# TAB 2 — KPIs resto (SIN CAMBIOS)
+# TAB 2 — KPIs resto (sin cambios relevantes)
 # ============================================================
 with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
@@ -771,10 +787,7 @@ with tab2:
             g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
             g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
             g = apply_cap_visual(g, cap_on, cap_val)
-            g["label"] = g.apply(
-                lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}",
-                axis=1
-            )
+            g["label"] = g.apply(lambda r: f"{pct(r['Cumpl'])} | {money(r['Real'])}/{money(r['Obj'])}", axis=1)
 
             st.markdown("### Ranking por sucursal — este KPI")
             if g.empty:
@@ -804,7 +817,7 @@ with tab2:
             )
 
 # ============================================================
-# TAB 3 — Gestión (SIN CAMBIOS)
+# TAB 3 — Gestión (sin cambios)
 # ============================================================
 with tab3:
     st.markdown("## 🧪 Gestión (desvíos)")
@@ -845,5 +858,82 @@ with tab3:
                 "⬇️ Descargar Excel (Detalle + Desvíos Gestión)",
                 data=excel_bytes,
                 file_name=f"Tablero_Gestion_Sem{semana_corte}_{suc_g.replace(' ','_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+# ============================================================
+# TAB 4 — Hitos del mes (Resumen del mes)
+# ============================================================
+with tab4:
+    st.markdown("## 🗓️ Hitos del mes — Resumen del mes")
+    st.caption(f"Mostrando la hoja **'Resumen del mes'** del archivo base (Mes ref: **{mes_ref}**).")
+    st.markdown("---")
+
+    if df_resumen_mes is None or df_resumen_mes.empty:
+        st.info("No se encontró la pestaña **'Resumen del mes'** o está vacía.")
+    else:
+        # Vista 1: tabla tal cual
+        st.markdown("### Vista tabla (tal cual la hoja)")
+        st.dataframe(df_resumen_mes, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("### Vista lectura rápida (líneas)")
+
+        # Genero una lectura rápida sin asumir estructura fija:
+        # - Si hay columnas tipo 'Hito' / 'Descripción' / 'Detalle' se usan.
+        cols_norm = {c: norm_text(c) for c in df_resumen_mes.columns}
+        col_hito = None
+        col_det  = None
+        for c, cn in cols_norm.items():
+            if cn in {"hito", "hitos", "tema", "titulo", "titulo del hito"}:
+                col_hito = c
+            if cn in {"detalle", "descripcion", "descripción", "comentario", "comentarios", "observacion", "observación"}:
+                col_det = c
+
+        # Limpio filas completamente vacías
+        tmp = df_resumen_mes.copy()
+        tmp = tmp.dropna(how="all")
+
+        if tmp.empty:
+            st.info("La hoja existe pero no tiene filas con contenido.")
+        else:
+            if col_hito is not None and col_det is not None:
+                for _, r in tmp.iterrows():
+                    h = str(r.get(col_hito, "")).strip()
+                    d = str(r.get(col_det, "")).strip()
+                    if (h == "" or h.lower() == "nan") and (d == "" or d.lower() == "nan"):
+                        continue
+                    st.markdown(f"- **{h}** — {d}")
+            elif col_hito is not None:
+                for _, r in tmp.iterrows():
+                    h = str(r.get(col_hito, "")).strip()
+                    if h and h.lower() != "nan":
+                        st.markdown(f"- {h}")
+            else:
+                # fallback: convierto cada fila en una línea "Col: Valor | Col: Valor"
+                for _, r in tmp.iterrows():
+                    parts = []
+                    for c in tmp.columns:
+                        v = r.get(c, "")
+                        if pd.isna(v):
+                            continue
+                        s = str(v).strip()
+                        if s == "" or s.lower() == "nan":
+                            continue
+                        parts.append(f"{c}: {s}")
+                    if parts:
+                        st.markdown(f"- " + " | ".join(parts))
+
+        # Export del resumen tal cual (opcional, por si querés llevarlo)
+        st.markdown("---")
+        with st.expander("⬇️ Exportar 'Resumen del mes' a Excel", expanded=False):
+            out = BytesIO()
+            with pd.ExcelWriter(out, engine="openpyxl") as writer:
+                df_resumen_mes.to_excel(writer, index=False, sheet_name="Resumen_del_mes")
+            out.seek(0)
+            st.download_button(
+                "Descargar Excel — Resumen del mes",
+                data=out,
+                file_name=f"Resumen_del_mes_{mes_ref}_{sucursal.replace(' ','_')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
