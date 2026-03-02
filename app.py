@@ -1,9 +1,10 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.6
+# v2.3.7
 # ✅ Proyección fin de mes por DÍAS HÁBILES (run-rate acumulado):
 #    Proy_EOM = (Real_acum / Dias_habiles_transcurridos) * Dias_habiles_mes
-# ✅ Nueva vista: Cumplimiento por Sucursal (entre Aperturas micro y Ranking micro)
+# ✅ En tarjetas macro (Repuestos/Servicios): mini-tarjeta visible con % Cumpl. al lado del chip de estado
+# ✅ Orden invertido: primero Cumplimiento por Sucursal, luego Aperturas (micro)
 # ============================================================
 
 import numpy as np
@@ -123,17 +124,39 @@ def badge_estado_html(est):
     </span>
     """
 
-def card_html(title, value, sub, estado_txt=None):
-    estado_block = ""
+def mini_kpi_html(label: str, value: str):
+    return f"""
+    <div style="display:inline-block;padding:6px 10px;border-radius:12px;
+                border:1px solid #eee;background:#f8f9fa;min-width:110px;text-align:center;">
+        <div style="font-size:11px;color:#6c757d;font-weight:800;letter-spacing:.2px;">{label}</div>
+        <div style="font-size:16px;font-weight:900;margin-top:2px;">{value}</div>
+    </div>
+    """
+
+def card_html(title, value, sub, estado_txt=None, right_kpi=None):
+    """
+    right_kpi: tuple(label, value) para mostrar una mini-tarjeta al lado del chip de estado.
+    """
+    footer = ""
     if estado_txt is not None:
-        estado_block = f"<div style='margin-top:8px;'>{badge_estado_html(estado_txt)}</div>"
+        if right_kpi is None:
+            footer = f"<div style='margin-top:10px;'>{badge_estado_html(estado_txt)}</div>"
+        else:
+            rk_label, rk_value = right_kpi
+            footer = f"""
+            <div style="margin-top:10px;display:flex;gap:10px;align-items:center;justify-content:flex-start;flex-wrap:wrap;">
+                <div>{badge_estado_html(estado_txt)}</div>
+                <div>{mini_kpi_html(rk_label, rk_value)}</div>
+            </div>
+            """
+
     return f"""
     <div style="border:1px solid #eee;border-radius:14px;padding:16px;background:#fff;
                 box-shadow:0 2px 10px rgba(0,0,0,0.04);">
         <div style="font-size:12px;color:#6c757d;font-weight:800;letter-spacing:0.2px;">{title}</div>
         <div style="font-size:28px;font-weight:900;margin-top:6px;">{value}</div>
         <div style="font-size:12px;color:#6c757d;margin-top:6px;">{sub}</div>
-        {estado_block}
+        {footer}
     </div>
     """
 
@@ -295,10 +318,7 @@ def apply_cap_visual(d, cap_on: bool, cap_value: float):
     out = d.copy()
     if "Cumpl" not in out.columns:
         return out
-    if cap_on:
-        out["Cumpl_plot"] = out["Cumpl"].clip(upper=cap_value)
-    else:
-        out["Cumpl_plot"] = out["Cumpl"]
+    out["Cumpl_plot"] = out["Cumpl"].clip(upper=cap_value) if cap_on else out["Cumpl"]
     return out
 
 # ---------------------------
@@ -327,7 +347,6 @@ with topc3:
 with topc4:
     st.caption("Tip: el cap es **solo visual** (ranking/gráficos). No altera el cálculo base.")
 
-# Si presentación: ocultar sidebar
 if st.session_state["modo_presentacion"]:
     st.markdown(hide_sidebar_css(), unsafe_allow_html=True)
 
@@ -340,7 +359,7 @@ def render_filters(area="sidebar"):
     if "sucursal" not in st.session_state:
         st.session_state["sucursal"] = "TODAS (Consolidado)"
     if "show_obj0" not in st.session_state:
-        st.session_state["show_obj0"] = True  # por tu experiencia, default True
+        st.session_state["show_obj0"] = True
 
     container = st.sidebar if area == "sidebar" else st.container()
 
@@ -371,7 +390,6 @@ def render_filters(area="sidebar"):
             key=f"obj0_{area}"
         )
 
-# Render filtros
 if st.session_state["modo_presentacion"]:
     with st.expander("Abrir filtros (presentación)", expanded=False):
         render_filters(area="top")
@@ -399,11 +417,9 @@ df_month = df[df["Mes"] == mes_ref].copy()
 if sucursal != "TODAS (Consolidado)":
     df_month = df_month[df_month["Sucursal"] == sucursal].copy()
 
-# Semana_Mes corte (1..4 dentro del mes)
 df_cut_mes = df_cut[df_cut["Mes"] == mes_ref].copy()
 semana_mes_corte = int(df_cut_mes["Semana_Mes"].max()) if not df_cut_mes.empty else 1
 
-# Días hábiles transcurridos / total del mes (desde hoja)
 dias_mes = df_dias_habiles[df_dias_habiles["Mes_norm"] == mes_ref_norm].copy()
 dias_total_mes = float(dias_mes["Dias habiles"].sum()) if not dias_mes.empty else np.nan
 dias_transc = float(dias_mes[dias_mes["Semana"] <= semana_mes_corte]["Dias habiles"].sum()) if not dias_mes.empty else np.nan
@@ -501,7 +517,7 @@ def micro_aperturas(d: pd.DataFrame, tipo: str):
     return g
 
 def micro_sucursal(d: pd.DataFrame, tipo: str):
-    """Nueva vista: cumplimiento acumulado por sucursal (para un KPI macro)."""
+    """Cumplimiento acumulado por sucursal (para un KPI macro)."""
     g = d.groupby("Sucursal", as_index=False).agg(
         Real=("Real_val","sum"),
         Obj=("Obj_val","sum")
@@ -571,22 +587,17 @@ def export_excel_bytes(detail_df: pd.DataFrame, acum_df: pd.DataFrame, name_deta
 def proyectar_eom_runrate(real_acum: float) -> float:
     """
     Proy_EOM = (Real_acum / Dias_transcurridos) * Dias_total_mes
-    Si faltan datos de días hábiles, devuelve NaN.
     """
     if pd.isna(dias_transc) or pd.isna(dias_total_mes) or dias_transc == 0:
         return np.nan
     return (float(real_acum) / float(dias_transc)) * float(dias_total_mes)
 
-def spark_evolucion(df_scope_month: pd.DataFrame, tipo: str):
-    """
-    Mini evolución semanal: Cumplimiento acumulado por Semana_Mes (1..N del mes).
-    (Solo para visualizar; se apoya en df_month del mes_ref)
-    """
+def spark_evolucion(df_scope_month: pd.DataFrame):
+    """Mini evolución semanal: Cumplimiento acumulado por Semana_Mes (1..N del mes)."""
     if df_scope_month.empty:
         return
 
-    x = df_scope_month.copy()
-    x = apply_obj0_filter(x, show_obj0)
+    x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
 
     g = x.groupby("Semana_Mes", as_index=False).agg(
         Real=("Real_val","sum"),
@@ -597,7 +608,6 @@ def spark_evolucion(df_scope_month: pd.DataFrame, tipo: str):
     g["Obj_acum"] = g["Obj"].cumsum()
     g["Cumpl_acum"] = g.apply(lambda r: safe_ratio(r["Real_acum"], r["Obj_acum"]), axis=1)
 
-    # Cap visual para el plot
     gg = g.copy()
     gg["Cumpl_plot"] = gg["Cumpl_acum"].clip(upper=cap_val) if cap_on else gg["Cumpl_acum"]
 
@@ -638,7 +648,7 @@ with tab1:
         f"{driver_txt}"
     )
 
-    # Macro cards con proyección por días hábiles
+    # Macro cards con proyección por días hábiles + mini tarjeta % cumplimiento
     def macro_cards_con_proy(d, titulo, df_scope_month_for_spark):
         d2 = apply_obj0_filter(d, show_obj0)
         real = d2["Real_val"].sum()
@@ -646,7 +656,8 @@ with tab1:
         c    = safe_ratio(real, obj)
 
         proy_real = proyectar_eom_runrate(real)
-        proy_c = safe_ratio(proy_real, obj)  # usando el Obj acumulado del corte (si querés obj mensual, se puede)
+        # Para el estado, usamos el % proyectado si existe, si no, el acumulado
+        proy_c = safe_ratio(proy_real, obj) if not pd.isna(proy_real) else np.nan
         est = estado(proy_c if not pd.isna(proy_c) else c)
 
         sub = (
@@ -655,13 +666,21 @@ with tab1:
             f"Días: {('—' if pd.isna(dias_transc) else int(dias_transc))}/{('—' if pd.isna(dias_total_mes) else int(dias_total_mes))}"
         )
 
-        st.markdown(card_html(titulo, money(real), sub, est), unsafe_allow_html=True)
-        spark_evolucion(df_scope_month_for_spark, "$")
+        st.markdown(
+            card_html(
+                titulo,
+                money(real),
+                sub,
+                estado_txt=est,
+                right_kpi=("Cumpl. Acum.", pct(c))
+            ),
+            unsafe_allow_html=True
+        )
+        spark_evolucion(df_scope_month_for_spark)
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
-        # Spark usa el mes_ref (df_month), con mismas aperturas seleccionadas
         rep_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="REPUESTOS")].copy()
         rep_month = rep_month[rep_month["Categoria_KPI"].isin(rep_sel)].copy()
         macro_cards_con_proy(d_rep, "Repuestos — Real (Acum.)", rep_month)
@@ -672,33 +691,7 @@ with tab1:
         srv_month = srv_month[srv_month["Categoria_KPI"].isin(srv_sel)].copy()
         macro_cards_con_proy(d_srv, "Servicios — Real (Acum.)", srv_month)
 
-    st.markdown("---")
-    st.markdown("### Aperturas — micro (cumplimiento acumulado)")
-
-    l, r = st.columns(2)
-    with l:
-        st.markdown("**Repuestos — por apertura**")
-        g = micro_aperturas(apply_obj0_filter(d_rep, show_obj0), "$")
-        if g.empty:
-            st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
-        else:
-            fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
-            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with r:
-        st.markdown("**Servicios — por apertura**")
-        g = micro_aperturas(apply_obj0_filter(d_srv, show_obj0), "$")
-        if g.empty:
-            st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
-        else:
-            fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
-            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ✅ NUEVA VISTA (entre micro aperturas y ranking micro)
+    # ✅ ORDEN INVERTIDO: primero Cumplimiento por sucursal
     st.markdown("---")
     st.markdown("### Cumplimiento por Sucursal — (acumulado)")
 
@@ -721,6 +714,33 @@ with tab1:
             st.info("Sin datos por sucursal (Obj=0 o sin datos).")
         else:
             fig = px.bar(g, x="Cumpl_plot", y="Sucursal", orientation="h", text="label")
+            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
+            fig.update_traces(textposition="inside")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ✅ y luego Aperturas micro
+    st.markdown("---")
+    st.markdown("### Aperturas — micro (cumplimiento acumulado)")
+
+    l, r = st.columns(2)
+    with l:
+        st.markdown("**Repuestos — por apertura**")
+        g = micro_aperturas(apply_obj0_filter(d_rep, show_obj0), "$")
+        if g.empty:
+            st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
+        else:
+            fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
+            fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
+            fig.update_traces(textposition="inside")
+            st.plotly_chart(fig, use_container_width=True)
+
+    with r:
+        st.markdown("**Servicios — por apertura**")
+        g = micro_aperturas(apply_obj0_filter(d_srv, show_obj0), "$")
+        if g.empty:
+            st.info("Sin datos (revisar aperturas seleccionadas / Obj=0).")
+        else:
+            fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
             st.plotly_chart(fig, use_container_width=True)
@@ -769,7 +789,6 @@ with tab1:
             fig.update_traces(textposition="inside")
             st.plotly_chart(fig, use_container_width=True)
 
-    # Auditoría + Export
     st.markdown("---")
     with st.expander("🔎 Auditoría y export (P&L)", expanded=False):
         detail = pd.concat([d_rep, d_srv], ignore_index=True).copy()
@@ -795,7 +814,7 @@ with tab1:
         )
 
 # ============================================================
-# TAB 2 — KPIs resto (tu versión original, sin cambios)
+# TAB 2 — KPIs resto (sin cambios)
 # ============================================================
 with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
@@ -873,7 +892,7 @@ with tab2:
             )
 
 # ============================================================
-# TAB 3 — Gestión (tu versión original, sin cambios)
+# TAB 3 — Gestión (sin cambios)
 # ============================================================
 with tab3:
     st.markdown("## 🧪 Gestión (desvíos)")
