@@ -1,8 +1,9 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.9
-# ✅ Sin chips/estados de color (no ✅⚠️🔴, no ROJO/AMARILLO/VERDE)
-# ✅ Spark semanal con eje X en enteros (1,2,3,4...)
+# v2.3.10
+# ✅ Sin chips/estados de color
+# ✅ Spark semanal: % visible por semana (texto sobre cada punto)
+# ✅ Eje X semanas en enteros (1,2,3,4...)
 # ✅ Orden: Cumplimiento por sucursal antes que Aperturas
 # ✅ Proyección fin de mes por DÍAS HÁBILES (run-rate acumulado)
 # ============================================================
@@ -101,7 +102,6 @@ def mini_kpi_html(label: str, value: str):
     """
 
 def footer_kpi_only_html(label: str, value: str):
-    # ✅ Sin chip de estado (solo KPI visible)
     return f"""
     <div style="margin-top:10px;display:flex;gap:10px;align-items:center;justify-content:flex-start;flex-wrap:wrap;">
         <div>{mini_kpi_html(label, value)}</div>
@@ -506,21 +506,41 @@ def proyectar_eom_runrate(real_acum: float) -> float:
     return (float(real_acum) / float(dias_transc)) * float(dias_total_mes)
 
 def spark_evolucion(df_scope_month: pd.DataFrame):
+    """
+    ✅ Ahora muestra Cumplimiento SEMANAL (Real_sem / Obj_sem)
+    ✅ y lo etiqueta (xx.x%) sobre cada semana.
+    """
     if df_scope_month.empty:
         return
+
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
-    g = x.groupby("Semana_Mes", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum")).sort_values("Semana_Mes")
-    g["Real_acum"] = g["Real"].cumsum()
-    g["Obj_acum"] = g["Obj"].cumsum()
-    g["Cumpl_acum"] = g.apply(lambda r: safe_ratio(r["Real_acum"], r["Obj_acum"]), axis=1)
+
+    g = x.groupby("Semana_Mes", as_index=False).agg(
+        Real=("Real_val","sum"),
+        Obj=("Obj_val","sum")
+    ).sort_values("Semana_Mes")
+
+    # Cumplimiento semanal
+    g["Cumpl_sem"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    g = g[~g["Cumpl_sem"].isna()].copy()
 
     gg = g.copy()
-    gg["Cumpl_plot"] = gg["Cumpl_acum"].clip(upper=cap_val) if cap_on else gg["Cumpl_acum"]
+    gg["Cumpl"] = gg["Cumpl_sem"]
+    gg["Cumpl_plot"] = gg["Cumpl"].clip(upper=cap_val) if cap_on else gg["Cumpl"]
 
-    fig = px.line(gg, x="Semana_Mes", y="Cumpl_plot", markers=False)
+    # Etiquetas visibles
+    gg["txt"] = gg["Cumpl"].apply(pct)
+
+    fig = px.line(gg, x="Semana_Mes", y="Cumpl_plot", markers=True, text="txt")
+
+    # Eje X entero
     weeks = sorted([int(w) for w in gg["Semana_Mes"].dropna().unique().tolist()])
     fig.update_xaxes(tickmode="array", tickvals=weeks, dtick=1)
-    fig.update_layout(height=120, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="", yaxis_title="")
+
+    # Texto arriba del punto
+    fig.update_traces(mode="lines+markers+text", textposition="top center")
+
+    fig.update_layout(height=150, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="", yaxis_title="")
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -545,7 +565,6 @@ with tab1:
     driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
     driver_txt = f"Principal desvío: **{driver['KPI']} / {driver['Cat']}** (Gap {money(driver['Gap'])})" if driver else "Principal desvío: —"
 
-    # ✅ Resumen ejecutivo SIN iconos/colores
     st.info(
         f"**Resumen Ejecutivo:** "
         f"Repuestos {pct(rep_c)} | "
