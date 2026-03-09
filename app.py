@@ -1,10 +1,11 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.15
-# ✅ TAB2 y TAB3 restaurados (completos)
-# ✅ Export Excel profesional + selector de semana para export
-# ✅ Sin columnas técnicas "label" en Excel
-# ✅ Formatos (moneda, %, encabezados, freeze, autofilter, ancho col)
+# v2.3.16
+# ✅ Filtro de MES
+# ✅ Semana corte limitada al mes seleccionado
+# ✅ Proyección / días hábiles / export Excel según mes elegido
+# ✅ TAB2 y TAB3 completos
+# ✅ Excel profesional resumido
 # ============================================================
 
 import numpy as np
@@ -37,11 +38,6 @@ def parse_semana_num(series: pd.Series) -> pd.Series:
     return np.floor(numf).astype("Int64")
 
 def to_num_ar(x):
-    """
-    Convierte números en formato AR/mixto a float.
-    Nota: si viene 2,189,341.88 (US style con comas), esto NO es AR.
-    En tu base real suele venir AR o float. Si un día aparece US, conviene corregir en origen.
-    """
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return np.nan
     s = str(x).strip()
@@ -58,12 +54,7 @@ def to_num_ar(x):
          .replace("\u00A0", "")
     )
 
-    # Heurística:
-    # - si tiene coma y punto: asumimos que coma es miles y punto decimal (estilo US) SOLO si el punto está al final como decimal.
-    # - si tiene coma sin punto: coma decimal (AR)
     if "," in s and "." in s:
-        # ejemplo "2,189,341.88" -> remove commas
-        # ejemplo "1.234.567,89" -> AR (puntos miles y coma decimal) -> remove dots and change comma
         last_comma = s.rfind(",")
         last_dot = s.rfind(".")
         if last_dot > last_comma:
@@ -75,7 +66,6 @@ def to_num_ar(x):
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
-        # solo punto o nada: float directo
         pass
 
     try:
@@ -198,6 +188,13 @@ def find_sheet_name(sheet_names, target: str):
             best = s
     return best if best_score >= max(2, len(t_words)//2) else None
 
+def build_month_label(mes_key: str) -> str:
+    try:
+        p = pd.Period(mes_key, freq="M")
+        return f"{month_name_es(p.month)} {p.year}"
+    except Exception:
+        return str(mes_key)
+
 # ---------------------------
 # EXCEL EXPORT PROFESIONAL
 # ---------------------------
@@ -215,12 +212,11 @@ def _autosize_ws(ws, min_w=10, max_w=55):
         ws.column_dimensions[col_letter].width = width
 
 def _style_table(ws, freeze_row=1):
-    header_fill = PatternFill("solid", fgColor="1F4E79")  # azul sobrio
+    header_fill = PatternFill("solid", fgColor="1F4E79")
     header_font = Font(color="FFFFFF", bold=True)
     center = Alignment(vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    # Header
     for cell in ws[1]:
         cell.fill = header_fill
         cell.font = header_font
@@ -229,16 +225,11 @@ def _style_table(ws, freeze_row=1):
     ws.freeze_panes = ws[f"A{freeze_row+1}"]
     ws.auto_filter.ref = ws.dimensions
 
-    # Body alignment
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = left
 
 def _format_columns(ws, col_formats: dict):
-    """
-    col_formats: {"Cumpl": "0.0%", "Real": '"$"#,##0', ...}
-    Match por nombre exacto de columna (fila 1).
-    """
     headers = [c.value for c in ws[1]]
     name_to_idx = {str(h): i+1 for i, h in enumerate(headers) if h is not None}
     for col_name, fmt in col_formats.items():
@@ -258,7 +249,6 @@ def build_exec_excel_professional(
     ranking_srv: pd.DataFrame,
     hitos_df: pd.DataFrame,
 ) -> BytesIO:
-    # Limpieza: nada de columnas "label", "Cumpl_plot", etc.
     def clean(df_in: pd.DataFrame, keep_cols=None, drop_cols=None):
         if df_in is None:
             return pd.DataFrame()
@@ -272,14 +262,11 @@ def build_exec_excel_professional(
             dfc = dfc[cols].copy()
         return dfc
 
-    # Hoja 01 Resumen: debe ser ultra entendible
-    # Usamos números (no strings) para poder formatear con moneda/%.
     resumen_clean = clean(
         resumen_df,
         keep_cols=["Bloque","Real_Acum","Obj_Acum","Cumpl_Acum","Proy_EOM_RunRate","Dias_Transc","Dias_Mes"]
     )
 
-    # Hoja 02 P&L Sucursal (dos bloques juntos, con columna Bloque)
     rep_s = clean(pl_sucursal_rep, drop_cols=["label","Cumpl_plot"])
     srv_s = clean(pl_sucursal_srv, drop_cols=["label","Cumpl_plot"])
     if not rep_s.empty:
@@ -288,7 +275,6 @@ def build_exec_excel_professional(
         srv_s.insert(0, "Bloque", "Servicios")
     pl_suc = pd.concat([rep_s, srv_s], ignore_index=True) if (not rep_s.empty or not srv_s.empty) else pd.DataFrame()
 
-    # Hoja 03 Aperturas (dos bloques juntos)
     rep_a = clean(pl_ap_rep, drop_cols=["label","Cumpl_plot"])
     srv_a = clean(pl_ap_srv, drop_cols=["label","Cumpl_plot"])
     if not rep_a.empty:
@@ -297,19 +283,16 @@ def build_exec_excel_professional(
         srv_a.insert(0, "Bloque", "Servicios")
     pl_ap = pd.concat([rep_a, srv_a], ignore_index=True) if (not rep_a.empty or not srv_a.empty) else pd.DataFrame()
 
-    # Hoja 04 Ranking micro (dos bloques juntos)
-    rep_r = clean(ranking_rep, drop_cols=["label","Cumpl_plot"])
-    srv_r = clean(ranking_srv, drop_cols=["label","Cumpl_plot"])
+    rep_r = clean(ranking_rep, drop_cols=["label","Cumpl_plot","key"])
+    srv_r = clean(ranking_srv, drop_cols=["label","Cumpl_plot","key"])
     if not rep_r.empty:
         rep_r.insert(0, "Bloque", "Repuestos")
     if not srv_r.empty:
         srv_r.insert(0, "Bloque", "Servicios")
     rank = pd.concat([rep_r, srv_r], ignore_index=True) if (not rep_r.empty or not srv_r.empty) else pd.DataFrame()
 
-    # Hitos tal cual (solo limpiamos columnas Unnamed si quedaran)
     hitos = pd.DataFrame() if hitos_df is None else hitos_df.copy()
 
-    # Export base con pandas (rápido)
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         meta_df.to_excel(writer, index=False, sheet_name="00_Meta")
@@ -320,16 +303,12 @@ def build_exec_excel_professional(
         hitos.to_excel(writer, index=False, sheet_name="05_Hitos_mes")
 
     out.seek(0)
-
-    # Formateo con openpyxl
     wb = load_workbook(out)
 
-    # Meta: simple
     ws = wb["00_Meta"]
     _style_table(ws)
     _autosize_ws(ws)
 
-    # Resumen: bonito y corto
     ws = wb["01_Resumen"]
     _style_table(ws)
     _format_columns(ws, {
@@ -342,7 +321,6 @@ def build_exec_excel_professional(
     })
     _autosize_ws(ws, min_w=12, max_w=40)
 
-    # P&L Sucursal
     ws = wb["02_P&L_Sucursal"]
     _style_table(ws)
     _format_columns(ws, {
@@ -352,7 +330,6 @@ def build_exec_excel_professional(
     })
     _autosize_ws(ws)
 
-    # P&L Aperturas
     ws = wb["03_P&L_Aperturas"]
     _style_table(ws)
     _format_columns(ws, {
@@ -362,7 +339,6 @@ def build_exec_excel_professional(
     })
     _autosize_ws(ws)
 
-    # Ranking
     ws = wb["04_Ranking_Micro"]
     _style_table(ws)
     _format_columns(ws, {
@@ -372,12 +348,10 @@ def build_exec_excel_professional(
     })
     _autosize_ws(ws)
 
-    # Hitos
     ws = wb["05_Hitos_mes"]
     _style_table(ws)
     _autosize_ws(ws, min_w=12, max_w=70)
 
-    # Guardar a BytesIO
     out2 = BytesIO()
     wb.save(out2)
     out2.seek(0)
@@ -437,7 +411,7 @@ df = df[~df["Semana_Num"].isna()].copy()
 df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
 df = df[~df["Fecha"].isna()].copy()
 
-df["Mes"] = df["Fecha"].dt.to_period("M").astype(str)  # YYYY-MM
+df["Mes"] = df["Fecha"].dt.to_period("M").astype(str)
 df["Mes_Nombre"] = df["Fecha"].dt.month.apply(month_name_es)
 df["Mes_norm"] = df["Mes_Nombre"].apply(norm_text)
 df["Semana_Mes"] = compute_semana_mes(df)
@@ -461,7 +435,6 @@ tmp = df.apply(build_real_obj, axis=1, result_type="expand")
 df["Real_val"] = pd.to_numeric(tmp[0], errors="coerce").fillna(0.0)
 df["Obj_val"]  = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
 
-# Días hábiles
 if df_dias_habiles is None or df_dias_habiles.empty:
     df_dias_habiles = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 for col in ["Mes","Semana","Dias habiles"]:
@@ -473,7 +446,7 @@ df_dias_habiles["Semana"] = pd.to_numeric(df_dias_habiles["Semana"], errors="coe
 df_dias_habiles["Dias habiles"] = pd.to_numeric(df_dias_habiles["Dias habiles"], errors="coerce").fillna(0).astype(float)
 
 # ---------------------------
-# CONTROLES
+# CONTROLES VISUALES
 # ---------------------------
 if "modo_presentacion" not in st.session_state:
     st.session_state["modo_presentacion"] = False
@@ -482,30 +455,6 @@ if "cap_visual" not in st.session_state:
 if "cap_val" not in st.session_state:
     st.session_state["cap_val"] = 2.0
 
-def apply_obj0_filter(d, show_obj0: bool):
-    return d.copy() if show_obj0 else d[d["Obj_val"] > 0].copy()
-
-def apply_cap_visual(d, cap_on: bool, cap_value: float):
-    out = d.copy()
-    if "Cumpl" not in out.columns:
-        return out
-    out["Cumpl_plot"] = out["Cumpl"].clip(upper=cap_value) if cap_on else out["Cumpl"]
-    return out
-
-# ---------------------------
-# FILTROS
-# ---------------------------
-semanas = sorted(df["Semana_Num"].dropna().unique().tolist())
-if not semanas:
-    st.error("No se encontraron semanas válidas en la columna 'Semana'.")
-    st.stop()
-
-default_sem = 1 if 1 in semanas else min(semanas)
-sucursales = sorted(df["Sucursal"].dropna().unique().tolist())
-
-# ---------------------------
-# TOP BAR
-# ---------------------------
 topc1, topc2, topc3, topc4 = st.columns([1.1, 1.2, 1.2, 1.5])
 with topc1:
     st.session_state["modo_presentacion"] = st.toggle("Modo presentación", value=st.session_state["modo_presentacion"])
@@ -516,33 +465,91 @@ with topc3:
     cap_label = st.selectbox("Máx visual", list(cap_options.keys()), index=1)
     st.session_state["cap_val"] = cap_options[cap_label]
 with topc4:
-    st.caption("Tip: el cap es **solo visual** (ranking/gráficos). No altera el cálculo base.")
+    st.caption("Tip: el cap es solo visual (ranking/gráficos). No altera el cálculo base.")
 
 if st.session_state["modo_presentacion"]:
     st.markdown(hide_sidebar_css(), unsafe_allow_html=True)
 
+# ---------------------------
+# FILTROS BASE
+# ---------------------------
+def apply_obj0_filter(d, show_obj0: bool):
+    return d.copy() if show_obj0 else d[d["Obj_val"] > 0].copy()
+
+def apply_cap_visual(d, cap_on: bool, cap_value: float):
+    out = d.copy()
+    if "Cumpl" not in out.columns:
+        return out
+    out["Cumpl_plot"] = out["Cumpl"].clip(upper=cap_value) if cap_on else out["Cumpl"]
+    return out
+
+meses_disponibles = sorted(df["Mes"].dropna().unique().tolist())
+if not meses_disponibles:
+    st.error("No se encontraron meses válidos en la base.")
+    st.stop()
+
+month_labels = {m: build_month_label(m) for m in meses_disponibles}
+meses_labels_ordenados = [month_labels[m] for m in meses_disponibles]
+label_to_mes = {v: k for k, v in month_labels.items()}
+
+default_mes = meses_disponibles[-1]
+
 def render_filters(area="sidebar"):
+    if "mes_sel" not in st.session_state:
+        st.session_state["mes_sel"] = default_mes
     if "semana_corte" not in st.session_state:
-        st.session_state["semana_corte"] = default_sem
+        st.session_state["semana_corte"] = None
     if "sucursal" not in st.session_state:
         st.session_state["sucursal"] = "TODAS (Consolidado)"
     if "show_obj0" not in st.session_state:
         st.session_state["show_obj0"] = True
 
     container = st.sidebar if area == "sidebar" else st.container()
+
+    # Semanas del mes elegido
+    semanas_mes = sorted(
+        df.loc[df["Mes"] == st.session_state["mes_sel"], "Semana_Num"].dropna().unique().tolist()
+    )
+    if not semanas_mes:
+        semanas_mes = []
+
+    if st.session_state["semana_corte"] not in semanas_mes:
+        st.session_state["semana_corte"] = semanas_mes[-1] if semanas_mes else None
+
+    sucursales = sorted(df["Sucursal"].dropna().unique().tolist())
+
     with container:
         if area == "sidebar":
             st.sidebar.markdown("## Filtros obligatorios")
         else:
             st.markdown("### Filtros")
 
+        mes_label_actual = month_labels.get(st.session_state["mes_sel"], st.session_state["mes_sel"])
+        mes_sel_label = st.selectbox(
+            "Mes",
+            meses_labels_ordenados,
+            index=meses_labels_ordenados.index(mes_label_actual) if mes_label_actual in meses_labels_ordenados else len(meses_labels_ordenados)-1,
+            key=f"mes_{area}"
+        )
+        st.session_state["mes_sel"] = label_to_mes[mes_sel_label]
+
+        # recalcular semanas del mes luego del cambio
+        semanas_mes = sorted(
+            df.loc[df["Mes"] == st.session_state["mes_sel"], "Semana_Num"].dropna().unique().tolist()
+        )
+        if st.session_state["semana_corte"] not in semanas_mes:
+            st.session_state["semana_corte"] = semanas_mes[-1] if semanas_mes else None
+
         st.session_state["semana_corte"] = st.selectbox(
-            "Semana corte", semanas,
-            index=semanas.index(st.session_state["semana_corte"]) if st.session_state["semana_corte"] in semanas else 0,
+            "Semana corte",
+            semanas_mes,
+            index=semanas_mes.index(st.session_state["semana_corte"]) if st.session_state["semana_corte"] in semanas_mes else 0,
             key=f"semana_{area}"
         )
+
         st.session_state["sucursal"] = st.selectbox(
-            "Sucursal", ["TODAS (Consolidado)"] + sucursales,
+            "Sucursal",
+            ["TODAS (Consolidado)"] + sucursales,
             index=(["TODAS (Consolidado)"] + sucursales).index(st.session_state["sucursal"])
             if st.session_state["sucursal"] in (["TODAS (Consolidado)"] + sucursales) else 0,
             key=f"sucursal_{area}"
@@ -562,6 +569,7 @@ if st.session_state["modo_presentacion"]:
 else:
     render_filters(area="sidebar")
 
+mes_sel = st.session_state["mes_sel"]
 semana_corte = int(st.session_state["semana_corte"])
 sucursal = st.session_state["sucursal"]
 show_obj0 = bool(st.session_state["show_obj0"])
@@ -569,33 +577,30 @@ cap_on = bool(st.session_state["cap_visual"])
 cap_val = float(st.session_state["cap_val"])
 
 # ---------------------------
-# CORTE / MES (según semana_corte)
+# DATOS DEL MES SELECCIONADO
 # ---------------------------
-df_cut = df[df["Semana_Num"] <= semana_corte].copy()
+df_mes = df[df["Mes"] == mes_sel].copy()
 if sucursal != "TODAS (Consolidado)":
-    df_cut = df_cut[df_cut["Sucursal"] == sucursal].copy()
+    df_mes = df_mes[df_mes["Sucursal"] == sucursal].copy()
 
-mes_ref = df_cut["Mes"].max() if not df_cut.empty else df["Mes"].max()
+df_cut = df_mes[df_mes["Semana_Num"] <= semana_corte].copy()
+
+mes_ref = mes_sel
 mes_ref_norm = norm_text(month_name_es(int(str(mes_ref).split("-")[1])))
 
 df_month = df[df["Mes"] == mes_ref].copy()
 if sucursal != "TODAS (Consolidado)":
     df_month = df_month[df_month["Sucursal"] == sucursal].copy()
 
-df_cut_mes = df_cut[df_cut["Mes"] == mes_ref].copy()
+df_cut_mes = df_cut.copy()
 semana_mes_corte = int(df_cut_mes["Semana_Mes"].max()) if not df_cut_mes.empty else 1
 
 dias_mes = df_dias_habiles[df_dias_habiles["Mes_norm"] == mes_ref_norm].copy()
 dias_total_mes = float(dias_mes["Dias habiles"].sum()) if not dias_mes.empty else np.nan
 dias_transc = float(dias_mes[dias_mes["Semana"] <= semana_mes_corte]["Dias habiles"].sum()) if not dias_mes.empty else np.nan
 
-def proyectar_eom_runrate(real_acum: float, dias_trans: float, dias_mes_total: float) -> float:
-    if pd.isna(dias_trans) or pd.isna(dias_mes_total) or dias_trans == 0:
-        return np.nan
-    return (float(real_acum) / float(dias_trans)) * float(dias_mes_total)
-
 # ---------------------------
-# P&L aperturas
+# P&L aperturas del mes elegido
 # ---------------------------
 def compute_openings_pl(dfc):
     rep_open = sorted(dfc[(dfc["KPI"].str.upper()=="REPUESTOS") & (dfc["Tipo_KPI"]=="$")]["Categoria_KPI"].unique().tolist())
@@ -645,7 +650,7 @@ rep_sel = st.session_state["rep_sel"]
 srv_sel = st.session_state["srv_sel"]
 
 # ---------------------------
-# FUNCIONES micro/agrupaciones
+# FUNCIONES DE NEGOCIO
 # ---------------------------
 def summarize_segment(dseg: pd.DataFrame):
     dseg = apply_obj0_filter(dseg, show_obj0)
@@ -653,6 +658,11 @@ def summarize_segment(dseg: pd.DataFrame):
     obj = dseg["Obj_val"].sum()
     c = safe_ratio(real, obj)
     return float(real), float(obj), c
+
+def proyectar_eom_runrate(real_acum: float, dias_trans: float, dias_mes_total: float) -> float:
+    if pd.isna(dias_trans) or pd.isna(dias_mes_total) or dias_trans == 0:
+        return np.nan
+    return (float(real_acum) / float(dias_trans)) * float(dias_mes_total)
 
 def micro_sucursal(d: pd.DataFrame):
     g = d.groupby("Sucursal", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
@@ -720,49 +730,81 @@ def spark_evolucion(df_scope_month: pd.DataFrame):
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
 
+def filter_hitos_by_month(df_hitos: pd.DataFrame, mes_key: str) -> pd.DataFrame:
+    """
+    Si existe una columna tipo Mes/Periodo/Fecha, intenta filtrar por mes.
+    Si no puede, devuelve toda la hoja.
+    """
+    if df_hitos is None or df_hitos.empty:
+        return pd.DataFrame()
+
+    tmp = df_hitos.copy()
+    month_cols = []
+    for c in tmp.columns:
+        nc = norm_text(c)
+        if nc in {"mes", "periodo", "periodo mes", "fecha", "month"} or "mes" in nc or "periodo" in nc:
+            month_cols.append(c)
+
+    if not month_cols:
+        return tmp
+
+    mes_label = build_month_label(mes_key)
+    mes_norm = norm_text(mes_label)
+    mes_key_norm = norm_text(mes_key)
+    nombre_mes = norm_text(month_name_es(int(str(mes_key).split("-")[1])))
+
+    mask = pd.Series(False, index=tmp.index)
+    for c in month_cols:
+        s = tmp[c].astype(str).apply(norm_text)
+        mask = mask | s.str.contains(mes_key_norm, na=False) | s.str.contains(nombre_mes, na=False) | s.str.contains(mes_norm, na=False)
+
+    filtrado = tmp[mask].copy()
+    return filtrado if not filtrado.empty else tmp
+
 # ---------------------------
-# HEADER + BOTÓN EXCEL PROFESIONAL (con selector semana)
+# HEADER + EXCEL
 # ---------------------------
 st.title("Tablero Posventa — Macro → Micro (Semanal + Acumulado)")
 
 hl, hr = st.columns([2.2, 1.0])
 with hl:
     st.caption(
-        f"Sucursal: **{sucursal}** | Corte semana **{semana_corte}** | "
-        f"Mes ref: **{mes_ref}** | SemanaMes corte: **{semana_mes_corte}** | "
+        f"Sucursal: **{sucursal}** | Mes: **{build_month_label(mes_sel)}** | "
+        f"Corte semana **{semana_corte}** | SemanaMes corte: **{semana_mes_corte}** | "
         f"Días hábiles transcurridos: **{(int(dias_transc) if not pd.isna(dias_transc) else '—')}** | "
         f"Días hábiles mes: **{(int(dias_total_mes) if not pd.isna(dias_total_mes) else '—')}**"
     )
 
 with hr:
-    # Semana export independiente (para Dirección)
+    semanas_mes_export = sorted(df.loc[df["Mes"] == mes_sel, "Semana_Num"].dropna().unique().tolist())
     sem_export = st.selectbox(
         "Semana para Excel",
-        semanas,
-        index=semanas.index(semana_corte) if semana_corte in semanas else 0,
-        help="El Excel se calcula hasta esta semana (acumulado y proyección con días hábiles hasta esa semana)."
+        semanas_mes_export,
+        index=semanas_mes_export.index(semana_corte) if semana_corte in semanas_mes_export else len(semanas_mes_export)-1,
+        help="El Excel se calcula hasta esta semana del mes seleccionado."
     )
 
-# Construcción del dataset de export con sem_export (independiente del corte del dashboard)
-df_cut_xls = df[df["Semana_Num"] <= int(sem_export)].copy()
+# dataset export según mes_sel + sem_export
+df_cut_xls = df[df["Mes"] == mes_sel].copy()
 if sucursal != "TODAS (Consolidado)":
     df_cut_xls = df_cut_xls[df_cut_xls["Sucursal"] == sucursal].copy()
+df_cut_xls = df_cut_xls[df_cut_xls["Semana_Num"] <= int(sem_export)].copy()
 
-mes_ref_xls = df_cut_xls["Mes"].max() if not df_cut_xls.empty else mes_ref
+mes_ref_xls = mes_sel
 mes_ref_norm_xls = norm_text(month_name_es(int(str(mes_ref_xls).split("-")[1])))
 
 df_month_xls = df[df["Mes"] == mes_ref_xls].copy()
 if sucursal != "TODAS (Consolidado)":
     df_month_xls = df_month_xls[df_month_xls["Sucursal"] == sucursal].copy()
 
-df_cut_mes_xls = df_cut_xls[df_cut_xls["Mes"] == mes_ref_xls].copy()
+df_cut_mes_xls = df_cut_xls.copy()
 semana_mes_corte_xls = int(df_cut_mes_xls["Semana_Mes"].max()) if not df_cut_mes_xls.empty else 1
 
 dias_mes_xls = df_dias_habiles[df_dias_habiles["Mes_norm"] == mes_ref_norm_xls].copy()
 dias_total_mes_xls = float(dias_mes_xls["Dias habiles"].sum()) if not dias_mes_xls.empty else np.nan
 dias_transc_xls = float(dias_mes_xls[dias_mes_xls["Semana"] <= semana_mes_corte_xls]["Dias habiles"].sum()) if not dias_mes_xls.empty else np.nan
 
-# P&L para export
+# P&L export
 d_pl_xls = df_cut_xls[df_cut_xls["Tipo_KPI"]=="$"].copy()
 d_rep_xls = d_pl_xls[d_pl_xls["KPI"].str.upper()=="REPUESTOS"].copy()
 d_rep_xls = d_rep_xls[d_rep_xls["Categoria_KPI"].isin(rep_sel)].copy()
@@ -780,13 +822,11 @@ rep_proy_xls = proyectar_eom_runrate(rep_real_xls, dias_transc_xls, dias_total_m
 srv_proy_xls = proyectar_eom_runrate(srv_real_xls, dias_transc_xls, dias_total_mes_xls)
 total_proy_xls = proyectar_eom_runrate(total_real_xls, dias_transc_xls, dias_total_mes_xls)
 
-# tablas limpias para export
 rep_by_suc_xls = micro_sucursal(apply_obj0_filter(d_rep_xls, show_obj0))
 srv_by_suc_xls = micro_sucursal(apply_obj0_filter(d_srv_xls, show_obj0))
 rep_by_ap_xls  = micro_aperturas(apply_obj0_filter(d_rep_xls, show_obj0))
 srv_by_ap_xls  = micro_aperturas(apply_obj0_filter(d_srv_xls, show_obj0))
 
-# Ranking export: usar los parámetros del UI del tab1 (si existen), si no, defaults
 top_n_xls = int(st.session_state.get("top_n_rank", 10))
 show_zero_rank_xls = bool(st.session_state.get("show_zero_rank", False))
 rep_rank_xls = ranking_sucursal_apertura_micro(d_rep_xls, top_n=top_n_xls, show_zero=show_zero_rank_xls)
@@ -794,7 +834,6 @@ srv_rank_xls = ranking_sucursal_apertura_micro(d_srv_xls, top_n=top_n_xls, show_
 
 driver_xls = principal_driver_gap(pd.concat([d_rep_xls, d_srv_xls], ignore_index=True))
 
-# Resumen ejecutivo (numérico)
 resumen_xls = pd.DataFrame([
     {"Bloque":"Repuestos", "Real_Acum":rep_real_xls, "Obj_Acum":rep_obj_xls, "Cumpl_Acum":rep_c_xls, "Proy_EOM_RunRate":rep_proy_xls,
      "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls), "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)},
@@ -806,9 +845,10 @@ resumen_xls = pd.DataFrame([
 
 meta_xls = pd.DataFrame([{
     "Sucursal": sucursal,
+    "Mes_Seleccionado": build_month_label(mes_sel),
+    "Mes_Key": mes_sel,
     "Semana_Corte_Dashboard": semana_corte,
     "Semana_Export_Excel": int(sem_export),
-    "Mes_Ref_Excel": mes_ref_xls,
     "SemanaMes_Corte_Excel": semana_mes_corte_xls,
     "Dias_Habiles_Transcurridos_Excel": (None if pd.isna(dias_transc_xls) else int(dias_transc_xls)),
     "Dias_Habiles_Mes_Excel": (None if pd.isna(dias_total_mes_xls) else int(dias_total_mes_xls)),
@@ -824,7 +864,8 @@ meta_xls = pd.DataFrame([{
     "Principal_Desvio_Gap": (driver_xls["Gap"] if driver_xls else np.nan),
 }])
 
-# Excel bytes profesional (se calcula siempre, descarga instantánea)
+hitos_export = filter_hitos_by_month(df_resumen_mes, mes_sel)
+
 excel_bytes_prof = build_exec_excel_professional(
     meta_df=meta_xls,
     resumen_df=resumen_xls,
@@ -834,14 +875,14 @@ excel_bytes_prof = build_exec_excel_professional(
     pl_ap_srv=srv_by_ap_xls,
     ranking_rep=rep_rank_xls,
     ranking_srv=srv_rank_xls,
-    hitos_df=(df_resumen_mes.copy() if (df_resumen_mes is not None and not df_resumen_mes.empty) else pd.DataFrame()),
+    hitos_df=hitos_export,
 )
 
 with hr:
     st.download_button(
         "⬇️ Resumen Ejecutivo (Excel)",
         data=excel_bytes_prof,
-        file_name=f"Resumen_Ejecutivo_Tablero_Posventa_{mes_ref_xls}_Sem{int(sem_export)}_{sucursal.replace(' ','_')}.xlsx",
+        file_name=f"Resumen_Ejecutivo_Tablero_Posventa_{mes_sel}_Sem{int(sem_export)}_{sucursal.replace(' ','_')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
@@ -1023,7 +1064,7 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
-# TAB 2 — KPIs resto (RESTAURADO COMPLETO)
+# TAB 2 — KPIs resto
 # ============================================================
 with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
@@ -1085,18 +1126,19 @@ with tab2:
             st.dataframe(detail, use_container_width=True, hide_index=True)
 
 # ============================================================
-# TAB 3 — Gestión (RESTAURADO COMPLETO)
+# TAB 3 — Gestión
 # ============================================================
 with tab3:
     st.markdown("## 🧪 Gestión (desvíos)")
     st.markdown("---")
 
-    suc_g = st.selectbox("Sucursal (Gestión)", ["TODAS (Consolidado)"] + sucursales, index=0)
+    suc_g = st.selectbox("Sucursal (Gestión)", ["TODAS (Consolidado)"] + sorted(df["Sucursal"].dropna().unique().tolist()), index=0)
 
-    d = df[df["Semana_Num"] <= semana_corte].copy()
+    d = df[df["Mes"] == mes_sel].copy()
     if suc_g != "TODAS (Consolidado)":
         d = d[d["Sucursal"] == suc_g].copy()
 
+    d = d[d["Semana_Num"] <= semana_corte].copy()
     d = apply_obj0_filter(d, show_obj0)
 
     g = d.groupby(["KPI","Categoria_KPI","Tipo_KPI"], as_index=False).agg(
@@ -1132,18 +1174,20 @@ with tab3:
 # ============================================================
 with tab4:
     st.markdown("## 🗓️ Hitos del mes — Resumen del mes")
-    st.caption("Tomado **tal cual** desde la pestaña de la base (fuzzy match por nombre).")
+    st.caption(f"Mes seleccionado: **{build_month_label(mes_sel)}**")
     st.markdown("---")
 
     if RESUMEN_SHEET_FOUND is None:
-        st.warning("No pude encontrar la hoja **'Resumen del mes'** por nombre.")
-        with st.expander("Ver pestañas detectadas (para identificar el nombre exacto)", expanded=True):
+        st.warning("No pude encontrar la hoja 'Resumen del mes' por nombre.")
+        with st.expander("Ver pestañas detectadas", expanded=True):
             st.write(SHEET_NAMES)
         st.stop()
 
     st.success(f"✅ Hoja encontrada: **{RESUMEN_SHEET_FOUND}**")
 
-    if df_resumen_mes is None or df_resumen_mes.empty:
-        st.info("La hoja existe, pero está vacía (o solo tiene encabezados).")
+    hitos_mes = filter_hitos_by_month(df_resumen_mes, mes_sel)
+
+    if hitos_mes is None or hitos_mes.empty:
+        st.info("La hoja existe, pero no tiene contenido para este mes.")
     else:
-        st.dataframe(df_resumen_mes, use_container_width=True, hide_index=True)
+        st.dataframe(hitos_mes, use_container_width=True, hide_index=True)
