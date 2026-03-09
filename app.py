@@ -1,11 +1,12 @@
 # ============================================================
-# TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado) v2.3
-# v2.3.16
-# ✅ Filtro de MES
-# ✅ Semana corte limitada al mes seleccionado
-# ✅ Proyección / días hábiles / export Excel según mes elegido
-# ✅ TAB2 y TAB3 completos
-# ✅ Excel profesional resumido
+# TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
+# v2.3.17
+# + Filtro de MES
+# + Export Excel profesional
+# + 3 tabs nuevos:
+#   🔧 Órdenes Abiertas
+#   🧾 Pend. Facturación
+#   💬 Presupuestos
 # ============================================================
 
 import numpy as np
@@ -14,6 +15,7 @@ import streamlit as st
 import plotly.express as px
 import gdown
 from io import BytesIO
+from datetime import datetime
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill
@@ -27,8 +29,17 @@ st.set_page_config(page_title="Tablero Posventa", layout="wide")
 DRIVE_FILE_ID = "191JKfQWj3yehcnisKTPDs_KpWaOTyslhQ0g273Xvzjc"
 EXCEL_LOCAL = "base_posventa.xlsx"
 
+SUCURSAL_MAP = {
+    2: "Jujuy",
+    3: "Taller Móvil",
+    4: "Salta",
+    5: "Tartagal",
+    7: "Lajitas",
+    9: "Chapa y Pintura",
+}
+
 # ---------------------------
-# HELPERS
+# HELPERS GENERALES
 # ---------------------------
 def parse_semana_num(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
@@ -46,7 +57,6 @@ def to_num_ar(x):
 
     is_pct = "%" in s
     s = s.replace("%", "")
-
     s = (
         s.replace("$", "")
          .replace("AR$", "")
@@ -196,7 +206,7 @@ def build_month_label(mes_key: str) -> str:
         return str(mes_key)
 
 # ---------------------------
-# EXCEL EXPORT PROFESIONAL
+# HELPERS EXCEL PROFESIONAL
 # ---------------------------
 def _autosize_ws(ws, min_w=10, max_w=55):
     for col in ws.columns:
@@ -248,6 +258,9 @@ def build_exec_excel_professional(
     ranking_rep: pd.DataFrame,
     ranking_srv: pd.DataFrame,
     hitos_df: pd.DataFrame,
+    abiertas_df: pd.DataFrame,
+    pendientes_fact_df: pd.DataFrame,
+    presup_df: pd.DataFrame,
 ) -> BytesIO:
     def clean(df_in: pd.DataFrame, keep_cols=None, drop_cols=None):
         if df_in is None:
@@ -291,6 +304,10 @@ def build_exec_excel_professional(
         srv_r.insert(0, "Bloque", "Servicios")
     rank = pd.concat([rep_r, srv_r], ignore_index=True) if (not rep_r.empty or not srv_r.empty) else pd.DataFrame()
 
+    # Nuevas hojas operativas
+    abiertas_xls = clean(abiertas_df)
+    pf_xls = clean(pendientes_fact_df)
+    presup_xls = clean(presup_df)
     hitos = pd.DataFrame() if hitos_df is None else hitos_df.copy()
 
     out = BytesIO()
@@ -301,17 +318,19 @@ def build_exec_excel_professional(
         pl_ap.to_excel(writer, index=False, sheet_name="03_P&L_Aperturas")
         rank.to_excel(writer, index=False, sheet_name="04_Ranking_Micro")
         hitos.to_excel(writer, index=False, sheet_name="05_Hitos_mes")
+        abiertas_xls.to_excel(writer, index=False, sheet_name="06_Abiertas")
+        pf_xls.to_excel(writer, index=False, sheet_name="07_Pend_Fact")
+        presup_xls.to_excel(writer, index=False, sheet_name="08_Presup")
 
     out.seek(0)
     wb = load_workbook(out)
 
-    ws = wb["00_Meta"]
-    _style_table(ws)
-    _autosize_ws(ws)
+    for ws_name in wb.sheetnames:
+        ws = wb[ws_name]
+        _style_table(ws)
+        _autosize_ws(ws)
 
-    ws = wb["01_Resumen"]
-    _style_table(ws)
-    _format_columns(ws, {
+    _format_columns(wb["01_Resumen"], {
         "Real_Acum": '"$"#,##0',
         "Obj_Acum": '"$"#,##0',
         "Cumpl_Acum": '0.0%',
@@ -319,38 +338,20 @@ def build_exec_excel_professional(
         "Dias_Transc": '0',
         "Dias_Mes": '0',
     })
-    _autosize_ws(ws, min_w=12, max_w=40)
 
-    ws = wb["02_P&L_Sucursal"]
-    _style_table(ws)
-    _format_columns(ws, {
-        "Real": '"$"#,##0',
-        "Obj": '"$"#,##0',
-        "Cumpl": '0.0%',
-    })
-    _autosize_ws(ws)
+    for ws_name in ["02_P&L_Sucursal", "03_P&L_Aperturas", "04_Ranking_Micro"]:
+        _format_columns(wb[ws_name], {
+            "Real": '"$"#,##0',
+            "Obj": '"$"#,##0',
+            "Cumpl": '0.0%',
+        })
 
-    ws = wb["03_P&L_Aperturas"]
-    _style_table(ws)
-    _format_columns(ws, {
-        "Real": '"$"#,##0',
-        "Obj": '"$"#,##0',
-        "Cumpl": '0.0%',
-    })
-    _autosize_ws(ws)
-
-    ws = wb["04_Ranking_Micro"]
-    _style_table(ws)
-    _format_columns(ws, {
-        "Real": '"$"#,##0',
-        "Obj": '"$"#,##0',
-        "Cumpl": '0.0%',
-    })
-    _autosize_ws(ws)
-
-    ws = wb["05_Hitos_mes"]
-    _style_table(ws)
-    _autosize_ws(ws, min_w=12, max_w=70)
+    for ws_name in ["06_Abiertas", "07_Pend_Fact", "08_Presup"]:
+        if ws_name in wb.sheetnames:
+            _format_columns(wb[ws_name], {
+                "Monto": '"$"#,##0',
+                "Antig_Dias": '0',
+            })
 
     out2 = BytesIO()
     wb.save(out2)
@@ -358,7 +359,225 @@ def build_exec_excel_professional(
     return out2
 
 # ---------------------------
-# LOAD
+# HELPERS NUEVOS: HOJAS OPERATIVAS
+# ---------------------------
+def detect_first_matching_column(df: pd.DataFrame, keywords: list[str]):
+    cols = list(df.columns)
+    norm_cols = {c: norm_text(c) for c in cols}
+    for kw in keywords:
+        nkw = norm_text(kw)
+        for c, nc in norm_cols.items():
+            if nkw == nc or nkw in nc:
+                return c
+    return None
+
+def map_sucursal_codes(series: pd.Series) -> pd.Series:
+    nums = pd.to_numeric(series, errors="coerce")
+    return nums.map(SUCURSAL_MAP).fillna(series.astype(str))
+
+def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+    """
+    Estandariza hojas Abiertas / Pendientes Fact / Presupuestos
+    sin depender rígidamente de encabezados.
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=[
+            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"
+        ])
+
+    df = df_raw.copy()
+    df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")]
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"
+        ])
+
+    # --- Sucursal
+    suc_col = None
+    if norm_text(sheet_name) == "presupuestos":
+        # columna E = índice 4
+        if len(df.columns) >= 5:
+            suc_col = df.columns[4]
+    if suc_col is None:
+        suc_col = detect_first_matching_column(df, ["Suc.", "Sucursal", "Suc", "SUCURSAL"])
+    if suc_col is None and len(df.columns) >= 1:
+        suc_col = df.columns[0]
+
+    # --- Documento / número
+    doc_col = detect_first_matching_column(df, [
+        "OT", "Orden", "Nro OT", "Numero OT", "N° OT", "Nro", "Numero", "Presupuesto", "Nro Presupuesto"
+    ])
+
+    # --- Cliente
+    cliente_col = detect_first_matching_column(df, ["Cliente", "Apellido y Nombre", "Nombre", "Razon Social"])
+
+    # --- Patente
+    patente_col = detect_first_matching_column(df, ["Patente", "Dominio"])
+
+    # --- Fecha relevante
+    fecha_col = detect_first_matching_column(df, [
+        "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso", "Fecha Emision", "Fecha Presupuesto",
+        "Fecha OT", "Alta", "Emision"
+    ])
+
+    # --- Importe / monto
+    monto_col = detect_first_matching_column(df, [
+        "Monto", "Importe", "Total", "Presupuesto", "Total Presupuesto", "Saldo", "Importe Total"
+    ])
+
+    # --- Asesor
+    asesor_col = detect_first_matching_column(df, ["Asesor", "Asesor Servicio", "Responsable", "Vendedor"])
+
+    # --- Estado
+    estado_col = detect_first_matching_column(df, ["Estado", "Situacion", "Situación", "Status"])
+
+    out = pd.DataFrame()
+    out["Sucursal"] = map_sucursal_codes(df[suc_col]) if suc_col in df.columns else "—"
+    out["Documento"] = df[doc_col].astype(str) if doc_col in df.columns else ""
+    out["Cliente"] = df[cliente_col].astype(str) if cliente_col in df.columns else ""
+    out["Patente"] = df[patente_col].astype(str) if patente_col in df.columns else ""
+    out["Fecha"] = pd.to_datetime(df[fecha_col], errors="coerce") if fecha_col in df.columns else pd.NaT
+    out["Monto"] = df[monto_col].apply(to_num_ar) if monto_col in df.columns else np.nan
+    out["Asesor"] = df[asesor_col].astype(str) if asesor_col in df.columns else ""
+    out["Estado"] = df[estado_col].astype(str) if estado_col in df.columns else ""
+    out["Origen"] = sheet_name
+
+    today = pd.Timestamp.today().normalize()
+    out["Antig_Dias"] = (today - out["Fecha"]).dt.days
+    out["Antig_Dias"] = out["Antig_Dias"].where(out["Antig_Dias"] >= 0)
+
+    # limpia strings vacíos / nan texto
+    for c in ["Documento", "Cliente", "Patente", "Asesor", "Estado"]:
+        out[c] = out[c].replace("nan", "").fillna("").astype(str).str.strip()
+
+    # elimina filas completamente vacías
+    keep_mask = (
+        out["Documento"].ne("") |
+        out["Cliente"].ne("") |
+        out["Patente"].ne("") |
+        out["Fecha"].notna() |
+        out["Monto"].notna()
+    )
+    out = out[keep_mask].copy()
+
+    return out
+
+def add_age_bucket(df_std: pd.DataFrame) -> pd.DataFrame:
+    x = df_std.copy()
+    if "Antig_Dias" not in x.columns:
+        x["Age_Bucket"] = "Sin fecha"
+        return x
+
+    def bucket(v):
+        if pd.isna(v):
+            return "Sin fecha"
+        v = float(v)
+        if v <= 2:
+            return "0-2 días"
+        if v <= 5:
+            return "3-5 días"
+        if v <= 10:
+            return "6-10 días"
+        if v <= 15:
+            return "11-15 días"
+        return "16+ días"
+
+    x["Age_Bucket"] = x["Antig_Dias"].apply(bucket)
+    return x
+
+def op_summary(df_std: pd.DataFrame):
+    if df_std is None or df_std.empty:
+        return {
+            "count": 0,
+            "monto": np.nan,
+            "age_avg": np.nan,
+            "age_max": np.nan
+        }
+    return {
+        "count": int(len(df_std)),
+        "monto": df_std["Monto"].sum(min_count=1) if "Monto" in df_std.columns else np.nan,
+        "age_avg": df_std["Antig_Dias"].mean() if "Antig_Dias" in df_std.columns else np.nan,
+        "age_max": df_std["Antig_Dias"].max() if "Antig_Dias" in df_std.columns else np.nan,
+    }
+
+def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
+    st.markdown(f"## {title}")
+    st.caption(purpose_text)
+    st.markdown("---")
+
+    if df_std is None or df_std.empty:
+        st.info("No hay registros en esta hoja o no se pudieron interpretar columnas con contenido útil.")
+        return
+
+    x = add_age_bucket(df_std)
+    summ = op_summary(x)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(card_html_base("Cantidad", qty_str(summ["count"]), "Casos totales"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html_base("Monto potencial", money_str(summ["monto"]), "Si la hoja incluye importe"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card_html_base("Antig. prom.", qty_str(round(summ["age_avg"], 0) if pd.notna(summ["age_avg"]) else np.nan), "Días promedio"), unsafe_allow_html=True)
+    with c4:
+        st.markdown(card_html_base("Antig. máxima", qty_str(summ["age_max"]), "Días"), unsafe_allow_html=True)
+
+    st.markdown("---")
+    a, b = st.columns(2)
+
+    with a:
+        st.markdown("### Casos por sucursal")
+        g = x.groupby("Sucursal", as_index=False).agg(
+            Casos=("Sucursal","count"),
+            Monto=("Monto","sum"),
+            Antig_Prom=("Antig_Dias","mean"),
+        ).sort_values("Casos", ascending=False)
+
+        fig = px.bar(g, x="Casos", y="Sucursal", orientation="h", text="Casos")
+        fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
+        fig.update_traces(textposition="inside")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with b:
+        st.markdown("### Antigüedad")
+        ga = x.groupby("Age_Bucket", as_index=False).agg(Casos=("Age_Bucket","count"))
+        order = ["0-2 días","3-5 días","6-10 días","11-15 días","16+ días","Sin fecha"]
+        ga["Age_Bucket"] = pd.Categorical(ga["Age_Bucket"], categories=order, ordered=True)
+        ga = ga.sort_values("Age_Bucket")
+
+        fig = px.bar(ga, x="Age_Bucket", y="Casos", text="Casos")
+        fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="")
+        fig.update_traces(textposition="outside")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    t1, t2 = st.columns(2)
+
+    with t1:
+        st.markdown("### Top más antiguos")
+        cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado"] if c in x.columns]
+        oldest = x.sort_values(["Antig_Dias","Monto"], ascending=[False, False]).head(15)[cols].copy()
+        st.dataframe(oldest, use_container_width=True, hide_index=True)
+
+    with t2:
+        if "Monto" in x.columns and x["Monto"].notna().any():
+            st.markdown("### Top mayor importe")
+            cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado"] if c in x.columns]
+            biggest = x.sort_values(["Monto","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            st.dataframe(biggest, use_container_width=True, hide_index=True)
+        else:
+            st.markdown("### Vista adicional")
+            cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Asesor","Estado"] if c in x.columns]
+            latest = x.sort_values(["Fecha","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            st.dataframe(latest, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    with st.expander("🔎 Detalle completo", expanded=False):
+        cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"] if c in x.columns]
+        st.dataframe(x[cols], use_container_width=True, hide_index=True)
+
+# ---------------------------
+# LOAD DRIVE
 # ---------------------------
 @st.cache_data(ttl=300)
 def load_from_drive():
@@ -368,9 +587,11 @@ def load_from_drive():
     xls = pd.ExcelFile(EXCEL_LOCAL)
     sheet_names = list(xls.sheet_names)
 
+    # Base principal
     df0 = pd.read_excel(xls, sheet_name=0)
     df0 = df0.loc[:, ~df0.columns.astype(str).str.match(r"^Unnamed")]
 
+    # Dias habiles
     dias_sheet = find_sheet_name(sheet_names, "Dias habiles")
     if dias_sheet is not None:
         df_dias = pd.read_excel(xls, sheet_name=dias_sheet)
@@ -378,6 +599,7 @@ def load_from_drive():
     else:
         df_dias = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 
+    # Resumen del mes
     resumen_sheet = find_sheet_name(sheet_names, "Resumen del mes")
     if resumen_sheet is not None:
         df_res = pd.read_excel(xls, sheet_name=resumen_sheet)
@@ -385,12 +607,32 @@ def load_from_drive():
     else:
         df_res = pd.DataFrame()
 
-    return df0, df_dias, df_res, sheet_names, dias_sheet, resumen_sheet
+    # Nuevas hojas
+    abiertas_sheet = find_sheet_name(sheet_names, "Abiertas")
+    pendientes_fact_sheet = find_sheet_name(sheet_names, "Pendientes Fact")
+    presup_sheet = find_sheet_name(sheet_names, "Presupuestos")
 
-df, df_dias_habiles, df_resumen_mes, SHEET_NAMES, DIAS_SHEET_FOUND, RESUMEN_SHEET_FOUND = load_from_drive()
+    df_abiertas = pd.read_excel(xls, sheet_name=abiertas_sheet) if abiertas_sheet else pd.DataFrame()
+    df_pfact = pd.read_excel(xls, sheet_name=pendientes_fact_sheet) if pendientes_fact_sheet else pd.DataFrame()
+    df_presup = pd.read_excel(xls, sheet_name=presup_sheet) if presup_sheet else pd.DataFrame()
+
+    for _df_name in ["df_abiertas","df_pfact","df_presup"]:
+        pass
+
+    return (
+        df0, df_dias, df_res, sheet_names, dias_sheet, resumen_sheet,
+        df_abiertas, df_pfact, df_presup,
+        abiertas_sheet, pendientes_fact_sheet, presup_sheet
+    )
+
+(
+    df, df_dias_habiles, df_resumen_mes, SHEET_NAMES, DIAS_SHEET_FOUND, RESUMEN_SHEET_FOUND,
+    df_abiertas_raw, df_pfact_raw, df_presup_raw,
+    ABIERTAS_SHEET_FOUND, PFACT_SHEET_FOUND, PRESUP_SHEET_FOUND
+) = load_from_drive()
 
 # ---------------------------
-# VALIDACIÓN
+# VALIDACIÓN BASE
 # ---------------------------
 required = [
     "Fecha","Semana","Sucursal","KPI","Categoria_KPI","Tipo_KPI",
@@ -403,7 +645,7 @@ if missing:
     st.stop()
 
 # ---------------------------
-# NORMALIZACIÓN
+# NORMALIZACIÓN BASE
 # ---------------------------
 df["Semana_Num"] = parse_semana_num(df["Semana"])
 df = df[~df["Semana_Num"].isna()].copy()
@@ -435,6 +677,7 @@ tmp = df.apply(build_real_obj, axis=1, result_type="expand")
 df["Real_val"] = pd.to_numeric(tmp[0], errors="coerce").fillna(0.0)
 df["Obj_val"]  = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
 
+# Días hábiles
 if df_dias_habiles is None or df_dias_habiles.empty:
     df_dias_habiles = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 for col in ["Mes","Semana","Dias habiles"]:
@@ -491,7 +734,6 @@ if not meses_disponibles:
 month_labels = {m: build_month_label(m) for m in meses_disponibles}
 meses_labels_ordenados = [month_labels[m] for m in meses_disponibles]
 label_to_mes = {v: k for k, v in month_labels.items()}
-
 default_mes = meses_disponibles[-1]
 
 def render_filters(area="sidebar"):
@@ -506,13 +748,9 @@ def render_filters(area="sidebar"):
 
     container = st.sidebar if area == "sidebar" else st.container()
 
-    # Semanas del mes elegido
     semanas_mes = sorted(
         df.loc[df["Mes"] == st.session_state["mes_sel"], "Semana_Num"].dropna().unique().tolist()
     )
-    if not semanas_mes:
-        semanas_mes = []
-
     if st.session_state["semana_corte"] not in semanas_mes:
         st.session_state["semana_corte"] = semanas_mes[-1] if semanas_mes else None
 
@@ -533,7 +771,6 @@ def render_filters(area="sidebar"):
         )
         st.session_state["mes_sel"] = label_to_mes[mes_sel_label]
 
-        # recalcular semanas del mes luego del cambio
         semanas_mes = sorted(
             df.loc[df["Mes"] == st.session_state["mes_sel"], "Semana_Num"].dropna().unique().tolist()
         )
@@ -650,7 +887,7 @@ rep_sel = st.session_state["rep_sel"]
 srv_sel = st.session_state["srv_sel"]
 
 # ---------------------------
-# FUNCIONES DE NEGOCIO
+# FUNCIONES DE NEGOCIO P&L
 # ---------------------------
 def summarize_segment(dseg: pd.DataFrame):
     dseg = apply_obj0_filter(dseg, show_obj0)
@@ -731,10 +968,6 @@ def spark_evolucion(df_scope_month: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True)
 
 def filter_hitos_by_month(df_hitos: pd.DataFrame, mes_key: str) -> pd.DataFrame:
-    """
-    Si existe una columna tipo Mes/Periodo/Fecha, intenta filtrar por mes.
-    Si no puede, devuelve toda la hoja.
-    """
     if df_hitos is None or df_hitos.empty:
         return pd.DataFrame()
 
@@ -762,7 +995,7 @@ def filter_hitos_by_month(df_hitos: pd.DataFrame, mes_key: str) -> pd.DataFrame:
     return filtrado if not filtrado.empty else tmp
 
 # ---------------------------
-# HEADER + EXCEL
+# HEADER + EXCEL PROFESIONAL
 # ---------------------------
 st.title("Tablero Posventa — Macro → Micro (Semanal + Acumulado)")
 
@@ -784,7 +1017,7 @@ with hr:
         help="El Excel se calcula hasta esta semana del mes seleccionado."
     )
 
-# dataset export según mes_sel + sem_export
+# Export según mes seleccionado
 df_cut_xls = df[df["Mes"] == mes_sel].copy()
 if sucursal != "TODAS (Consolidado)":
     df_cut_xls = df_cut_xls[df_cut_xls["Sucursal"] == sucursal].copy()
@@ -833,6 +1066,12 @@ rep_rank_xls = ranking_sucursal_apertura_micro(d_rep_xls, top_n=top_n_xls, show_
 srv_rank_xls = ranking_sucursal_apertura_micro(d_srv_xls, top_n=top_n_xls, show_zero=show_zero_rank_xls)
 
 driver_xls = principal_driver_gap(pd.concat([d_rep_xls, d_srv_xls], ignore_index=True))
+hitos_export = filter_hitos_by_month(df_resumen_mes, mes_sel)
+
+# Nuevas hojas operativas export
+abiertas_std = build_operational_standard(df_abiertas_raw, "Abiertas")
+pfact_std = build_operational_standard(df_pfact_raw, "Pendientes Fact")
+presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
 
 resumen_xls = pd.DataFrame([
     {"Bloque":"Repuestos", "Real_Acum":rep_real_xls, "Obj_Acum":rep_obj_xls, "Cumpl_Acum":rep_c_xls, "Proy_EOM_RunRate":rep_proy_xls,
@@ -857,14 +1096,15 @@ meta_xls = pd.DataFrame([{
     "Incluir_Obj_0": show_obj0,
     "Hoja_Dias_Habiles": (DIAS_SHEET_FOUND if DIAS_SHEET_FOUND is not None else "NO_ENCONTRADA"),
     "Hoja_Resumen_del_Mes": (RESUMEN_SHEET_FOUND if RESUMEN_SHEET_FOUND is not None else "NO_ENCONTRADA"),
+    "Hoja_Abiertas": (ABIERTAS_SHEET_FOUND if ABIERTAS_SHEET_FOUND is not None else "NO_ENCONTRADA"),
+    "Hoja_Pend_Fact": (PFACT_SHEET_FOUND if PFACT_SHEET_FOUND is not None else "NO_ENCONTRADA"),
+    "Hoja_Presupuestos": (PRESUP_SHEET_FOUND if PRESUP_SHEET_FOUND is not None else "NO_ENCONTRADA"),
     "Ranking_TopN": top_n_xls,
     "Ranking_ShowZero": show_zero_rank_xls,
     "Principal_Desvio_KPI": (driver_xls["KPI"] if driver_xls else "—"),
     "Principal_Desvio_Cat": (driver_xls["Cat"] if driver_xls else "—"),
     "Principal_Desvio_Gap": (driver_xls["Gap"] if driver_xls else np.nan),
 }])
-
-hitos_export = filter_hitos_by_month(df_resumen_mes, mes_sel)
 
 excel_bytes_prof = build_exec_excel_professional(
     meta_df=meta_xls,
@@ -876,6 +1116,9 @@ excel_bytes_prof = build_exec_excel_professional(
     ranking_rep=rep_rank_xls,
     ranking_srv=srv_rank_xls,
     hitos_df=hitos_export,
+    abiertas_df=abiertas_std,
+    pendientes_fact_df=pfact_std,
+    presup_df=presup_std,
 )
 
 with hr:
@@ -890,11 +1133,14 @@ with hr:
 # ---------------------------
 # TABS
 # ---------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
     "🧪 Gestión (desvíos)",
-    "🗓️ Hitos del mes"
+    "🗓️ Hitos del mes",
+    "🔧 Órdenes Abiertas",
+    "🧾 Pend. Facturación",
+    "💬 Presupuestos"
 ])
 
 # ============================================================
@@ -1191,3 +1437,36 @@ with tab4:
         st.info("La hoja existe, pero no tiene contenido para este mes.")
     else:
         st.dataframe(hitos_mes, use_container_width=True, hide_index=True)
+
+# ============================================================
+# TAB 5 — ÓRDENES ABIERTAS
+# ============================================================
+with tab5:
+    abiertas_std = build_operational_standard(df_abiertas_raw, "Abiertas")
+    render_operational_tab(
+        abiertas_std,
+        "🔧 Órdenes Abiertas",
+        "Vehículos actualmente en taller con trabajos o reparaciones pendientes. Foco de gestión: destrabar backlog, acelerar terminación de trabajos y cierre de órdenes."
+    )
+
+# ============================================================
+# TAB 6 — PENDIENTES FACTURACIÓN
+# ============================================================
+with tab6:
+    pfact_std = build_operational_standard(df_pfact_raw, "Pendientes Fact")
+    render_operational_tab(
+        pfact_std,
+        "🧾 Pendientes de Facturación",
+        "Órdenes finalizadas que todavía no se transformaron en facturación/cobro. Foco de gestión: conversión a caja y cierre administrativo."
+    )
+
+# ============================================================
+# TAB 7 — PRESUPUESTOS
+# ============================================================
+with tab7:
+    presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
+    render_operational_tab(
+        presup_std,
+        "💬 Presupuestos Pendientes",
+        "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización de importes/antigüedad."
+    )
