@@ -1,6 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.19
+# v2.3.20
 # + Filtro de MES
 # + Export Excel profesional
 # + 3 tabs operativos:
@@ -9,12 +9,15 @@
 #   💬 Presupuestos
 # + Abiertas / Pend. Fact:
 #   L = Imp. Cliente | M = Imp. Interna | N = Imp. Garantía
+#   O = Recepcionista / Asesor
 #   Monto = L + M + N
 # + Presupuestos:
 #   Sucursal = columna E
 #   Estado = columna H
 #   Filtro por estado en tab Presupuestos
 # + Mix de facturación en tabs operativos
+# + Filtro por recepcionista en Abiertas / Pend. Fact
+# + Gráficos de pastel por recepcionista (cantidad y monto)
 # ============================================================
 
 import numpy as np
@@ -132,22 +135,6 @@ def card_html_base(title, value, sub):
         <div style="font-size:12px;color:#6c757d;font-weight:800;letter-spacing:0.2px;">{title}</div>
         <div style="font-size:28px;font-weight:900;margin-top:6px;">{value}</div>
         <div style="font-size:12px;color:#6c757d;margin-top:6px;">{sub}</div>
-    </div>
-    """
-
-def mini_kpi_html(label: str, value: str):
-    return f"""
-    <div style="display:inline-block;padding:6px 10px;border-radius:12px;
-                border:1px solid #eee;background:#f8f9fa;min-width:110px;text-align:center;">
-        <div style="font-size:11px;color:#6c757d;font-weight:800;letter-spacing:.2px;">{label}</div>
-        <div style="font-size:16px;font-weight:900;margin-top:2px;">{value}</div>
-    </div>
-    """
-
-def footer_kpi_only_html(label: str, value: str):
-    return f"""
-    <div style="margin-top:10px;display:flex;gap:10px;align-items:center;justify-content:flex-start;flex-wrap:wrap;">
-        <div>{mini_kpi_html(label, value)}</div>
     </div>
     """
 
@@ -388,8 +375,10 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     """
     Estandariza hojas Abiertas / Pendientes Fact / Presupuestos.
     Reglas especiales:
-    - Abiertas y Pendientes Fact: L:N = Imp. Cliente / Interna / Garantía
-    - Presupuestos: Sucursal = columna E, Estado = columna H
+    - Abiertas y Pendientes Fact:
+      L = Imp. Cliente, M = Imp. Interna, N = Imp. Garantía, O = Recepcionista/Asesor
+    - Presupuestos:
+      E = Sucursal, H = Estado
     """
     cols_out = [
         "Sucursal","Documento","Cliente","Patente","Fecha",
@@ -437,10 +426,15 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
         "Fecha Emision", "Fecha Presupuesto", "Fecha OT", "Alta", "Emision"
     ])
 
-    # Asesor
-    asesor_col = detect_first_matching_column(df, [
-        "Asesor", "Asesor Servicio", "Responsable", "Vendedor"
-    ])
+    # Asesor / Recepcionista
+    asesor_col = None
+    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
+        if len(df.columns) >= 15:
+            asesor_col = df.columns[14]  # O
+    if asesor_col is None:
+        asesor_col = detect_first_matching_column(df, [
+            "Asesor", "Recepcionista", "Asesor Servicio", "Responsable", "Vendedor"
+        ])
 
     # Estado
     estado_col = None
@@ -466,9 +460,9 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
 
     if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
         if len(df.columns) >= 14:
-            col_l = df.columns[11]  # L
-            col_m = df.columns[12]  # M
-            col_n = df.columns[13]  # N
+            col_l = df.columns[11]
+            col_m = df.columns[12]
+            col_n = df.columns[13]
 
             out["Imp_Cliente"] = df[col_l].apply(to_num_ar)
             out["Imp_Interna"] = df[col_m].apply(to_num_ar)
@@ -546,7 +540,7 @@ def op_summary(df_std: pd.DataFrame):
         "age_max": df_std["Antig_Dias"].max() if "Antig_Dias" in df_std.columns else np.nan,
     }
 
-def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
+def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str, enable_asesor_filter: bool = False):
     st.markdown(f"## {title}")
     st.caption(purpose_text)
     st.markdown("---")
@@ -555,7 +549,69 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
         st.info("No hay registros en esta hoja o no se pudieron interpretar columnas con contenido útil.")
         return
 
-    x = add_age_bucket(df_std)
+    base = add_age_bucket(df_std.copy())
+
+    # Filtro por recepcionista / asesor
+    if enable_asesor_filter:
+        asesores_disp = sorted([a for a in base["Asesor"].dropna().astype(str).str.strip().unique().tolist() if a != ""])
+        f1, f2 = st.columns([1.6, 1.4])
+
+        with f1:
+            asesor_sel = st.multiselect(
+                "Filtrar recepcionista / asesor",
+                asesores_disp,
+                default=asesores_disp
+            ) if asesores_disp else []
+
+        with f2:
+            st.caption("Los gráficos y tablas de abajo respetan este filtro.")
+
+        if asesores_disp:
+            x = base[base["Asesor"].astype(str).isin(asesor_sel)].copy()
+        else:
+            x = base.copy()
+
+        # PASTEL POR RECEPCIONISTA
+        st.markdown("### Participación por recepcionista")
+        p1, p2 = st.columns(2)
+
+        ga_count = (
+            base.groupby("Asesor", as_index=False)
+            .agg(Casos=("Asesor","count"))
+            .sort_values("Casos", ascending=False)
+        )
+        ga_count = ga_count[ga_count["Asesor"].astype(str).str.strip() != ""]
+
+        with p1:
+            st.markdown("**% sobre cantidad de órdenes**")
+            if ga_count.empty:
+                st.info("Sin recepcionistas identificados.")
+            else:
+                fig = px.pie(ga_count, names="Asesor", values="Casos")
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+
+        ga_monto = (
+            base.groupby("Asesor", as_index=False)
+            .agg(Monto=("Monto","sum"))
+            .sort_values("Monto", ascending=False)
+        )
+        ga_monto = ga_monto[
+            (ga_monto["Asesor"].astype(str).str.strip() != "") &
+            (ga_monto["Monto"].fillna(0) > 0)
+        ]
+
+        with p2:
+            st.markdown("**% sobre valor económico**")
+            if ga_monto.empty:
+                st.info("Sin importes para distribuir por recepcionista.")
+            else:
+                fig = px.pie(ga_monto, names="Asesor", values="Monto")
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        x = base.copy()
+
     summ = op_summary(x)
 
     # MIX DE FACTURACIÓN
@@ -624,8 +680,8 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
     t1, t2 = st.columns(2)
 
     cols = [c for c in [
-        "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias",
-        "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Asesor","Estado"
+        "Sucursal","Asesor","Documento","Cliente","Patente","Fecha","Antig_Dias",
+        "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado"
     ] if c in x.columns]
 
     with t1:
@@ -646,8 +702,8 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
     st.markdown("---")
     with st.expander("🔎 Detalle completo", expanded=False):
         cols = [c for c in [
-            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias",
-            "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Asesor","Estado","Origen"
+            "Sucursal","Asesor","Documento","Cliente","Patente","Fecha","Antig_Dias",
+            "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado","Origen"
         ] if c in x.columns]
         st.dataframe(x[cols], use_container_width=True, hide_index=True)
 
@@ -1254,7 +1310,9 @@ with tab1:
             f"Días: {('—' if pd.isna(dias_transc) else int(dias_transc))}/{('—' if pd.isna(dias_total_mes) else int(dias_total_mes))}"
         )
         st.markdown(card_html_base(titulo, money_str(real), sub), unsafe_allow_html=True)
-        st.markdown(footer_kpi_only_html("Cumpl. Acum.", pct_str(c)), unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="margin-top:10px;">{pct_str(c)}</div>
+        """, unsafe_allow_html=True)
         spark_evolucion(df_scope_month_for_spark)
 
     c1, c_mid, c2 = st.columns([1.0, 1.05, 1.0])
@@ -1402,7 +1460,7 @@ with tab2:
                 ),
                 unsafe_allow_html=True
             )
-            st.markdown(footer_kpi_only_html("Cumpl. Acum.", pct_str(c)), unsafe_allow_html=True)
+            st.markdown(f"**Cumpl. Acum.:** {pct_str(c)}")
 
             g = xt.groupby("Sucursal", as_index=False).agg(
                 Real=("Real_val","sum"),
@@ -1506,7 +1564,8 @@ with tab5:
     render_operational_tab(
         abiertas_std,
         "🔧 Órdenes Abiertas",
-        "Vehículos actualmente en taller con trabajos o reparaciones pendientes. Foco de gestión: destrabar backlog, acelerar terminación de trabajos y cierre de órdenes."
+        "Vehículos actualmente en taller con trabajos o reparaciones pendientes. Foco de gestión: destrabar backlog, acelerar terminación de trabajos y cierre de órdenes.",
+        enable_asesor_filter=True
     )
 
 # ============================================================
@@ -1517,7 +1576,8 @@ with tab6:
     render_operational_tab(
         pfact_std,
         "🧾 Pendientes de Facturación",
-        "Órdenes finalizadas que todavía no se transformaron en facturación/cobro. Foco de gestión: conversión a caja y cierre administrativo."
+        "Órdenes finalizadas que todavía no se transformaron en facturación/cobro. Foco de gestión: conversión a caja y cierre administrativo.",
+        enable_asesor_filter=True
     )
 
 # ============================================================
@@ -1541,5 +1601,6 @@ with tab7:
         render_operational_tab(
             presup_f,
             "💬 Presupuestos Pendientes",
-            "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización por importe/antigüedad."
+            "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización por importe/antigüedad.",
+            enable_asesor_filter=False
         )
