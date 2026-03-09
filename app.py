@@ -1,12 +1,20 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.17
+# v2.3.19
 # + Filtro de MES
 # + Export Excel profesional
-# + 3 tabs nuevos:
+# + 3 tabs operativos:
 #   🔧 Órdenes Abiertas
 #   🧾 Pend. Facturación
 #   💬 Presupuestos
+# + Abiertas / Pend. Fact:
+#   L = Imp. Cliente | M = Imp. Interna | N = Imp. Garantía
+#   Monto = L + M + N
+# + Presupuestos:
+#   Sucursal = columna E
+#   Estado = columna H
+#   Filtro por estado en tab Presupuestos
+# + Mix de facturación en tabs operativos
 # ============================================================
 
 import numpy as np
@@ -15,7 +23,6 @@ import streamlit as st
 import plotly.express as px
 import gdown
 from io import BytesIO
-from datetime import datetime
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill
@@ -304,7 +311,6 @@ def build_exec_excel_professional(
         srv_r.insert(0, "Bloque", "Servicios")
     rank = pd.concat([rep_r, srv_r], ignore_index=True) if (not rep_r.empty or not srv_r.empty) else pd.DataFrame()
 
-    # Nuevas hojas operativas
     abiertas_xls = clean(abiertas_df)
     pf_xls = clean(pendientes_fact_df)
     presup_xls = clean(presup_df)
@@ -349,6 +355,9 @@ def build_exec_excel_professional(
     for ws_name in ["06_Abiertas", "07_Pend_Fact", "08_Presup"]:
         if ws_name in wb.sheetnames:
             _format_columns(wb[ws_name], {
+                "Imp_Cliente": '"$"#,##0',
+                "Imp_Interna": '"$"#,##0',
+                "Imp_Garantia": '"$"#,##0',
                 "Monto": '"$"#,##0',
                 "Antig_Dias": '0',
             })
@@ -359,7 +368,7 @@ def build_exec_excel_professional(
     return out2
 
 # ---------------------------
-# HELPERS NUEVOS: HOJAS OPERATIVAS
+# HELPERS OPERATIVOS
 # ---------------------------
 def detect_first_matching_column(df: pd.DataFrame, keywords: list[str]):
     cols = list(df.columns)
@@ -377,59 +386,68 @@ def map_sucursal_codes(series: pd.Series) -> pd.Series:
 
 def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """
-    Estandariza hojas Abiertas / Pendientes Fact / Presupuestos
-    sin depender rígidamente de encabezados.
+    Estandariza hojas Abiertas / Pendientes Fact / Presupuestos.
+    Reglas especiales:
+    - Abiertas y Pendientes Fact: L:N = Imp. Cliente / Interna / Garantía
+    - Presupuestos: Sucursal = columna E, Estado = columna H
     """
+    cols_out = [
+        "Sucursal","Documento","Cliente","Patente","Fecha",
+        "Antig_Dias","Imp_Cliente","Imp_Interna","Imp_Garantia","Monto",
+        "Asesor","Estado","Origen"
+    ]
+
     if df_raw is None or df_raw.empty:
-        return pd.DataFrame(columns=[
-            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"
-        ])
+        return pd.DataFrame(columns=cols_out)
 
     df = df_raw.copy()
     df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")]
     if df.empty:
-        return pd.DataFrame(columns=[
-            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"
-        ])
+        return pd.DataFrame(columns=cols_out)
 
-    # --- Sucursal
+    sheet_norm = norm_text(sheet_name)
+
+    # Sucursal
     suc_col = None
-    if norm_text(sheet_name) == "presupuestos":
-        # columna E = índice 4
+    if sheet_norm == "presupuestos":
         if len(df.columns) >= 5:
-            suc_col = df.columns[4]
+            suc_col = df.columns[4]  # E
     if suc_col is None:
         suc_col = detect_first_matching_column(df, ["Suc.", "Sucursal", "Suc", "SUCURSAL"])
     if suc_col is None and len(df.columns) >= 1:
         suc_col = df.columns[0]
 
-    # --- Documento / número
+    # Documento
     doc_col = detect_first_matching_column(df, [
-        "OT", "Orden", "Nro OT", "Numero OT", "N° OT", "Nro", "Numero", "Presupuesto", "Nro Presupuesto"
+        "OT", "Orden", "Nro OT", "Numero OT", "N° OT", "Nro", "Numero",
+        "Presupuesto", "Nro Presupuesto"
     ])
 
-    # --- Cliente
-    cliente_col = detect_first_matching_column(df, ["Cliente", "Apellido y Nombre", "Nombre", "Razon Social"])
+    # Cliente
+    cliente_col = detect_first_matching_column(df, [
+        "Cliente", "Apellido y Nombre", "Nombre", "Razon Social"
+    ])
 
-    # --- Patente
+    # Patente
     patente_col = detect_first_matching_column(df, ["Patente", "Dominio"])
 
-    # --- Fecha relevante
+    # Fecha
     fecha_col = detect_first_matching_column(df, [
-        "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso", "Fecha Emision", "Fecha Presupuesto",
-        "Fecha OT", "Alta", "Emision"
+        "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso",
+        "Fecha Emision", "Fecha Presupuesto", "Fecha OT", "Alta", "Emision"
     ])
 
-    # --- Importe / monto
-    monto_col = detect_first_matching_column(df, [
-        "Monto", "Importe", "Total", "Presupuesto", "Total Presupuesto", "Saldo", "Importe Total"
+    # Asesor
+    asesor_col = detect_first_matching_column(df, [
+        "Asesor", "Asesor Servicio", "Responsable", "Vendedor"
     ])
 
-    # --- Asesor
-    asesor_col = detect_first_matching_column(df, ["Asesor", "Asesor Servicio", "Responsable", "Vendedor"])
-
-    # --- Estado
-    estado_col = detect_first_matching_column(df, ["Estado", "Situacion", "Situación", "Status"])
+    # Estado
+    estado_col = None
+    if sheet_norm == "presupuestos" and len(df.columns) >= 8:
+        estado_col = df.columns[7]  # H
+    if estado_col is None:
+        estado_col = detect_first_matching_column(df, ["Estado", "Situacion", "Situación", "Status"])
 
     out = pd.DataFrame()
     out["Sucursal"] = map_sucursal_codes(df[suc_col]) if suc_col in df.columns else "—"
@@ -437,26 +455,54 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     out["Cliente"] = df[cliente_col].astype(str) if cliente_col in df.columns else ""
     out["Patente"] = df[patente_col].astype(str) if patente_col in df.columns else ""
     out["Fecha"] = pd.to_datetime(df[fecha_col], errors="coerce") if fecha_col in df.columns else pd.NaT
-    out["Monto"] = df[monto_col].apply(to_num_ar) if monto_col in df.columns else np.nan
     out["Asesor"] = df[asesor_col].astype(str) if asesor_col in df.columns else ""
     out["Estado"] = df[estado_col].astype(str) if estado_col in df.columns else ""
     out["Origen"] = sheet_name
+
+    out["Imp_Cliente"] = np.nan
+    out["Imp_Interna"] = np.nan
+    out["Imp_Garantia"] = np.nan
+    out["Monto"] = np.nan
+
+    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
+        if len(df.columns) >= 14:
+            col_l = df.columns[11]  # L
+            col_m = df.columns[12]  # M
+            col_n = df.columns[13]  # N
+
+            out["Imp_Cliente"] = df[col_l].apply(to_num_ar)
+            out["Imp_Interna"] = df[col_m].apply(to_num_ar)
+            out["Imp_Garantia"] = df[col_n].apply(to_num_ar)
+            out["Monto"] = (
+                out["Imp_Cliente"].fillna(0)
+                + out["Imp_Interna"].fillna(0)
+                + out["Imp_Garantia"].fillna(0)
+            )
+            out["Monto"] = out["Monto"].where(out["Monto"] != 0, np.nan)
+    else:
+        monto_col = detect_first_matching_column(df, [
+            "Monto", "Importe", "Total", "Presupuesto",
+            "Total Presupuesto", "Saldo", "Importe Total"
+        ])
+        if monto_col in df.columns:
+            out["Monto"] = df[monto_col].apply(to_num_ar)
 
     today = pd.Timestamp.today().normalize()
     out["Antig_Dias"] = (today - out["Fecha"]).dt.days
     out["Antig_Dias"] = out["Antig_Dias"].where(out["Antig_Dias"] >= 0)
 
-    # limpia strings vacíos / nan texto
     for c in ["Documento", "Cliente", "Patente", "Asesor", "Estado"]:
         out[c] = out[c].replace("nan", "").fillna("").astype(str).str.strip()
 
-    # elimina filas completamente vacías
     keep_mask = (
         out["Documento"].ne("") |
         out["Cliente"].ne("") |
         out["Patente"].ne("") |
         out["Fecha"].notna() |
-        out["Monto"].notna()
+        out["Monto"].notna() |
+        out["Imp_Cliente"].notna() |
+        out["Imp_Interna"].notna() |
+        out["Imp_Garantia"].notna()
     )
     out = out[keep_mask].copy()
 
@@ -512,15 +558,36 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
     x = add_age_bucket(df_std)
     summ = op_summary(x)
 
+    # MIX DE FACTURACIÓN
+    imp_cliente = x["Imp_Cliente"].sum(min_count=1) if "Imp_Cliente" in x.columns else np.nan
+    imp_interna = x["Imp_Interna"].sum(min_count=1) if "Imp_Interna" in x.columns else np.nan
+    imp_garantia = x["Imp_Garantia"].sum(min_count=1) if "Imp_Garantia" in x.columns else np.nan
+    monto_total = x["Monto"].sum(min_count=1) if "Monto" in x.columns else np.nan
+
+    mix_cliente = safe_ratio(imp_cliente, monto_total)
+    mix_interna = safe_ratio(imp_interna, monto_total)
+    mix_garantia = safe_ratio(imp_garantia, monto_total)
+
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(card_html_base("Cantidad", qty_str(summ["count"]), "Casos totales"), unsafe_allow_html=True)
     with c2:
-        st.markdown(card_html_base("Monto potencial", money_str(summ["monto"]), "Si la hoja incluye importe"), unsafe_allow_html=True)
+        st.markdown(card_html_base("Monto potencial", money_str(summ["monto"]), "Monto total"), unsafe_allow_html=True)
     with c3:
         st.markdown(card_html_base("Antig. prom.", qty_str(round(summ["age_avg"], 0) if pd.notna(summ["age_avg"]) else np.nan), "Días promedio"), unsafe_allow_html=True)
     with c4:
         st.markdown(card_html_base("Antig. máxima", qty_str(summ["age_max"]), "Días"), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### Mix de facturación")
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.markdown(card_html_base("Mix Cliente", pct_str(mix_cliente), f"Monto {money_str(imp_cliente)}"), unsafe_allow_html=True)
+    with m2:
+        st.markdown(card_html_base("Mix Interna", pct_str(mix_interna), f"Monto {money_str(imp_interna)}"), unsafe_allow_html=True)
+    with m3:
+        st.markdown(card_html_base("Mix Garantía", pct_str(mix_garantia), f"Monto {money_str(imp_garantia)}"), unsafe_allow_html=True)
 
     st.markdown("---")
     a, b = st.columns(2)
@@ -531,6 +598,9 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
             Casos=("Sucursal","count"),
             Monto=("Monto","sum"),
             Antig_Prom=("Antig_Dias","mean"),
+            Imp_Cliente=("Imp_Cliente","sum"),
+            Imp_Interna=("Imp_Interna","sum"),
+            Imp_Garantia=("Imp_Garantia","sum"),
         ).sort_values("Casos", ascending=False)
 
         fig = px.bar(g, x="Casos", y="Sucursal", orientation="h", text="Casos")
@@ -553,27 +623,32 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str):
     st.markdown("---")
     t1, t2 = st.columns(2)
 
+    cols = [c for c in [
+        "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias",
+        "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Asesor","Estado"
+    ] if c in x.columns]
+
     with t1:
         st.markdown("### Top más antiguos")
-        cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado"] if c in x.columns]
         oldest = x.sort_values(["Antig_Dias","Monto"], ascending=[False, False]).head(15)[cols].copy()
         st.dataframe(oldest, use_container_width=True, hide_index=True)
 
     with t2:
         if "Monto" in x.columns and x["Monto"].notna().any():
             st.markdown("### Top mayor importe")
-            cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado"] if c in x.columns]
             biggest = x.sort_values(["Monto","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
             st.dataframe(biggest, use_container_width=True, hide_index=True)
         else:
             st.markdown("### Vista adicional")
-            cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Asesor","Estado"] if c in x.columns]
             latest = x.sort_values(["Fecha","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
             st.dataframe(latest, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     with st.expander("🔎 Detalle completo", expanded=False):
-        cols = [c for c in ["Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias","Monto","Asesor","Estado","Origen"] if c in x.columns]
+        cols = [c for c in [
+            "Sucursal","Documento","Cliente","Patente","Fecha","Antig_Dias",
+            "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Asesor","Estado","Origen"
+        ] if c in x.columns]
         st.dataframe(x[cols], use_container_width=True, hide_index=True)
 
 # ---------------------------
@@ -587,11 +662,9 @@ def load_from_drive():
     xls = pd.ExcelFile(EXCEL_LOCAL)
     sheet_names = list(xls.sheet_names)
 
-    # Base principal
     df0 = pd.read_excel(xls, sheet_name=0)
     df0 = df0.loc[:, ~df0.columns.astype(str).str.match(r"^Unnamed")]
 
-    # Dias habiles
     dias_sheet = find_sheet_name(sheet_names, "Dias habiles")
     if dias_sheet is not None:
         df_dias = pd.read_excel(xls, sheet_name=dias_sheet)
@@ -599,7 +672,6 @@ def load_from_drive():
     else:
         df_dias = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 
-    # Resumen del mes
     resumen_sheet = find_sheet_name(sheet_names, "Resumen del mes")
     if resumen_sheet is not None:
         df_res = pd.read_excel(xls, sheet_name=resumen_sheet)
@@ -607,7 +679,6 @@ def load_from_drive():
     else:
         df_res = pd.DataFrame()
 
-    # Nuevas hojas
     abiertas_sheet = find_sheet_name(sheet_names, "Abiertas")
     pendientes_fact_sheet = find_sheet_name(sheet_names, "Pendientes Fact")
     presup_sheet = find_sheet_name(sheet_names, "Presupuestos")
@@ -615,9 +686,6 @@ def load_from_drive():
     df_abiertas = pd.read_excel(xls, sheet_name=abiertas_sheet) if abiertas_sheet else pd.DataFrame()
     df_pfact = pd.read_excel(xls, sheet_name=pendientes_fact_sheet) if pendientes_fact_sheet else pd.DataFrame()
     df_presup = pd.read_excel(xls, sheet_name=presup_sheet) if presup_sheet else pd.DataFrame()
-
-    for _df_name in ["df_abiertas","df_pfact","df_presup"]:
-        pass
 
     return (
         df0, df_dias, df_res, sheet_names, dias_sheet, resumen_sheet,
@@ -677,7 +745,6 @@ tmp = df.apply(build_real_obj, axis=1, result_type="expand")
 df["Real_val"] = pd.to_numeric(tmp[0], errors="coerce").fillna(0.0)
 df["Obj_val"]  = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
 
-# Días hábiles
 if df_dias_habiles is None or df_dias_habiles.empty:
     df_dias_habiles = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
 for col in ["Mes","Semana","Dias habiles"]:
@@ -1017,7 +1084,6 @@ with hr:
         help="El Excel se calcula hasta esta semana del mes seleccionado."
     )
 
-# Export según mes seleccionado
 df_cut_xls = df[df["Mes"] == mes_sel].copy()
 if sucursal != "TODAS (Consolidado)":
     df_cut_xls = df_cut_xls[df_cut_xls["Sucursal"] == sucursal].copy()
@@ -1026,10 +1092,6 @@ df_cut_xls = df_cut_xls[df_cut_xls["Semana_Num"] <= int(sem_export)].copy()
 mes_ref_xls = mes_sel
 mes_ref_norm_xls = norm_text(month_name_es(int(str(mes_ref_xls).split("-")[1])))
 
-df_month_xls = df[df["Mes"] == mes_ref_xls].copy()
-if sucursal != "TODAS (Consolidado)":
-    df_month_xls = df_month_xls[df_month_xls["Sucursal"] == sucursal].copy()
-
 df_cut_mes_xls = df_cut_xls.copy()
 semana_mes_corte_xls = int(df_cut_mes_xls["Semana_Mes"].max()) if not df_cut_mes_xls.empty else 1
 
@@ -1037,7 +1099,6 @@ dias_mes_xls = df_dias_habiles[df_dias_habiles["Mes_norm"] == mes_ref_norm_xls].
 dias_total_mes_xls = float(dias_mes_xls["Dias habiles"].sum()) if not dias_mes_xls.empty else np.nan
 dias_transc_xls = float(dias_mes_xls[dias_mes_xls["Semana"] <= semana_mes_corte_xls]["Dias habiles"].sum()) if not dias_mes_xls.empty else np.nan
 
-# P&L export
 d_pl_xls = df_cut_xls[df_cut_xls["Tipo_KPI"]=="$"].copy()
 d_rep_xls = d_pl_xls[d_pl_xls["KPI"].str.upper()=="REPUESTOS"].copy()
 d_rep_xls = d_rep_xls[d_rep_xls["Categoria_KPI"].isin(rep_sel)].copy()
@@ -1068,7 +1129,6 @@ srv_rank_xls = ranking_sucursal_apertura_micro(d_srv_xls, top_n=top_n_xls, show_
 driver_xls = principal_driver_gap(pd.concat([d_rep_xls, d_srv_xls], ignore_index=True))
 hitos_export = filter_hitos_by_month(df_resumen_mes, mes_sel)
 
-# Nuevas hojas operativas export
 abiertas_std = build_operational_standard(df_abiertas_raw, "Abiertas")
 pfact_std = build_operational_standard(df_pfact_raw, "Pendientes Fact")
 presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
@@ -1465,8 +1525,21 @@ with tab6:
 # ============================================================
 with tab7:
     presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
-    render_operational_tab(
-        presup_std,
-        "💬 Presupuestos Pendientes",
-        "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización de importes/antigüedad."
-    )
+
+    if presup_std is None or presup_std.empty:
+        st.markdown("## 💬 Presupuestos Pendientes")
+        st.info("No hay registros en esta hoja o no se pudieron interpretar columnas con contenido útil.")
+    else:
+        estados_disp = sorted([e for e in presup_std["Estado"].dropna().astype(str).str.strip().unique().tolist() if e != ""])
+        estado_sel = st.multiselect(
+            "Filtrar estado (columna H)",
+            estados_disp,
+            default=estados_disp
+        )
+        presup_f = presup_std[presup_std["Estado"].astype(str).isin(estado_sel)].copy() if estados_disp else presup_std.copy()
+
+        render_operational_tab(
+            presup_f,
+            "💬 Presupuestos Pendientes",
+            "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización por importe/antigüedad."
+        )
