@@ -1,6 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.21
+# v2.3.22
 # + Filtro de MES
 # + Export Excel profesional
 # + 3 tabs operativos:
@@ -8,10 +8,13 @@
 #   🧾 Pend. Facturación
 #   💬 Presupuestos
 # + Abiertas / Pend. Fact:
-#   E = Ord.Rep.
+#   E = Ord.Rep.  -> Nro de Orden
 #   L = Imp. Cliente | M = Imp. Interna | N = Imp. Garantía
 #   O = Recepcionista / Asesor
 #   Monto = L + M + N
+# + Fechas operativas:
+#   Abiertas -> columna B (Apertura)
+#   Pend. Fact -> columna C
 # + Presupuestos:
 #   Sucursal = columna E
 #   Estado = columna H
@@ -375,8 +378,16 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     """
     Estandariza hojas Abiertas / Pendientes Fact / Presupuestos.
     Reglas especiales:
-    - Abiertas y Pendientes Fact:
-      E = Ord.Rep. (Documento)
+    - Abiertas:
+      B = Apertura (Fecha)
+      E = Ord.Rep. (Nro de Orden)
+      L = Imp. Cliente
+      M = Imp. Interna
+      N = Imp. Garantía
+      O = Recepcionista/Asesor
+    - Pendientes Fact:
+      C = Fecha
+      E = Ord.Rep. (Nro de Orden)
       L = Imp. Cliente
       M = Imp. Interna
       N = Imp. Garantía
@@ -386,7 +397,7 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
       H = Estado
     """
     cols_out = [
-        "Sucursal","Documento","Cliente","Patente","Fecha",
+        "Sucursal","Nro de Orden","Cliente","Patente","Fecha",
         "Antig_Dias","Imp_Cliente","Imp_Interna","Imp_Garantia","Monto",
         "Asesor","Estado","Origen"
     ]
@@ -411,11 +422,11 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     if suc_col is None and len(df.columns) >= 1:
         suc_col = df.columns[0]
 
-    # Documento / Ord.Rep.
+    # Nro de Orden / Ord.Rep.
     doc_col = None
     if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
         if len(df.columns) >= 5:
-            doc_col = df.columns[4]  # E = Ord.Rep.
+            doc_col = df.columns[4]  # E
     if doc_col is None:
         doc_col = detect_first_matching_column(df, [
             "Ord.Rep.", "Ord Rep", "OT", "Orden", "Nro OT", "Numero OT", "N° OT",
@@ -431,10 +442,18 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     patente_col = detect_first_matching_column(df, ["Patente", "Dominio"])
 
     # Fecha
-    fecha_col = detect_first_matching_column(df, [
-        "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso",
-        "Fecha Emision", "Fecha Presupuesto", "Fecha OT", "Alta", "Emision"
-    ])
+    fecha_col = None
+    if sheet_norm == "abiertas":
+        if len(df.columns) >= 2:
+            fecha_col = df.columns[1]  # B = Apertura
+    elif sheet_norm in ["pendientes fact", "pendientes facturacion", "pend fact"]:
+        if len(df.columns) >= 3:
+            fecha_col = df.columns[2]  # C
+    if fecha_col is None:
+        fecha_col = detect_first_matching_column(df, [
+            "Apertura", "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso",
+            "Fecha Emision", "Fecha Presupuesto", "Fecha OT", "Alta", "Emision"
+        ])
 
     # Asesor / Recepcionista
     asesor_col = None
@@ -455,7 +474,7 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
 
     out = pd.DataFrame()
     out["Sucursal"] = map_sucursal_codes(df[suc_col]) if suc_col in df.columns else "—"
-    out["Documento"] = df[doc_col].astype(str) if doc_col in df.columns else ""
+    out["Nro de Orden"] = df[doc_col].astype(str) if doc_col in df.columns else ""
     out["Cliente"] = df[cliente_col].astype(str) if cliente_col in df.columns else ""
     out["Patente"] = df[patente_col].astype(str) if patente_col in df.columns else ""
     out["Fecha"] = pd.to_datetime(df[fecha_col], errors="coerce") if fecha_col in df.columns else pd.NaT
@@ -495,11 +514,11 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     out["Antig_Dias"] = (today - out["Fecha"]).dt.days
     out["Antig_Dias"] = out["Antig_Dias"].where(out["Antig_Dias"] >= 0)
 
-    for c in ["Documento", "Cliente", "Patente", "Asesor", "Estado"]:
+    for c in ["Nro de Orden", "Cliente", "Patente", "Asesor", "Estado"]:
         out[c] = out[c].replace("nan", "").fillna("").astype(str).str.strip()
 
     keep_mask = (
-        out["Documento"].ne("") |
+        out["Nro de Orden"].ne("") |
         out["Cliente"].ne("") |
         out["Patente"].ne("") |
         out["Fecha"].notna() |
@@ -549,6 +568,13 @@ def op_summary(df_std: pd.DataFrame):
         "age_avg": df_std["Antig_Dias"].mean() if "Antig_Dias" in df_std.columns else np.nan,
         "age_max": df_std["Antig_Dias"].max() if "Antig_Dias" in df_std.columns else np.nan,
     }
+
+def format_money_cols(df_in: pd.DataFrame, cols_money: list[str]) -> pd.DataFrame:
+    df = df_in.copy()
+    for c in cols_money:
+        if c in df.columns:
+            df[c] = df[c].apply(money_str)
+    return df
 
 def render_operational_tab(
     df_std: pd.DataFrame,
@@ -603,7 +629,6 @@ def render_operational_tab(
         else:
             x = x0.copy()
 
-        # Pasteles por recepcionista
         st.markdown("### Participación por recepcionista")
         p1, p2 = st.columns(2)
 
@@ -646,7 +671,6 @@ def render_operational_tab(
 
     summ = op_summary(x)
 
-    # Mix de facturación
     imp_cliente = x["Imp_Cliente"].sum(min_count=1) if "Imp_Cliente" in x.columns else np.nan
     imp_interna = x["Imp_Interna"].sum(min_count=1) if "Imp_Interna" in x.columns else np.nan
     imp_garantia = x["Imp_Garantia"].sum(min_count=1) if "Imp_Garantia" in x.columns else np.nan
@@ -712,32 +736,37 @@ def render_operational_tab(
     t1, t2 = st.columns(2)
 
     cols = [c for c in [
-        "Sucursal","Asesor","Documento","Cliente","Patente","Fecha","Antig_Dias",
+        "Sucursal","Asesor","Nro de Orden","Cliente","Patente","Fecha","Antig_Dias",
         "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado"
     ] if c in x.columns]
 
     with t1:
         st.markdown("### Top más antiguos")
         oldest = x.sort_values(["Antig_Dias","Monto"], ascending=[False, False]).head(15)[cols].copy()
+        oldest = format_money_cols(oldest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
         st.dataframe(oldest, use_container_width=True, hide_index=True)
 
     with t2:
         if "Monto" in x.columns and x["Monto"].notna().any():
             st.markdown("### Top mayor importe")
             biggest = x.sort_values(["Monto","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            biggest = format_money_cols(biggest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
             st.dataframe(biggest, use_container_width=True, hide_index=True)
         else:
             st.markdown("### Vista adicional")
             latest = x.sort_values(["Fecha","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            latest = format_money_cols(latest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
             st.dataframe(latest, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     with st.expander("🔎 Detalle completo", expanded=False):
         cols = [c for c in [
-            "Sucursal","Asesor","Documento","Cliente","Patente","Fecha","Antig_Dias",
+            "Sucursal","Asesor","Nro de Orden","Cliente","Patente","Fecha","Antig_Dias",
             "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado","Origen"
         ] if c in x.columns]
-        st.dataframe(x[cols], use_container_width=True, hide_index=True)
+        det = x[cols].copy()
+        det = format_money_cols(det, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
+        st.dataframe(det, use_container_width=True, hide_index=True)
 
 # ---------------------------
 # LOAD DRIVE
