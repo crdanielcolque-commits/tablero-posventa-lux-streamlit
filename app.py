@@ -1,6 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.20
+# v2.3.21
 # + Filtro de MES
 # + Export Excel profesional
 # + 3 tabs operativos:
@@ -8,14 +8,14 @@
 #   🧾 Pend. Facturación
 #   💬 Presupuestos
 # + Abiertas / Pend. Fact:
+#   E = Ord.Rep.
 #   L = Imp. Cliente | M = Imp. Interna | N = Imp. Garantía
 #   O = Recepcionista / Asesor
 #   Monto = L + M + N
 # + Presupuestos:
 #   Sucursal = columna E
 #   Estado = columna H
-#   Filtro por estado en tab Presupuestos
-# + Mix de facturación en tabs operativos
+# + Filtros multiselección por sucursal en tabs operativos
 # + Filtro por recepcionista en Abiertas / Pend. Fact
 # + Gráficos de pastel por recepcionista (cantidad y monto)
 # ============================================================
@@ -376,9 +376,14 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     Estandariza hojas Abiertas / Pendientes Fact / Presupuestos.
     Reglas especiales:
     - Abiertas y Pendientes Fact:
-      L = Imp. Cliente, M = Imp. Interna, N = Imp. Garantía, O = Recepcionista/Asesor
+      E = Ord.Rep. (Documento)
+      L = Imp. Cliente
+      M = Imp. Interna
+      N = Imp. Garantía
+      O = Recepcionista/Asesor
     - Presupuestos:
-      E = Sucursal, H = Estado
+      E = Sucursal
+      H = Estado
     """
     cols_out = [
         "Sucursal","Documento","Cliente","Patente","Fecha",
@@ -406,11 +411,16 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     if suc_col is None and len(df.columns) >= 1:
         suc_col = df.columns[0]
 
-    # Documento
-    doc_col = detect_first_matching_column(df, [
-        "OT", "Orden", "Nro OT", "Numero OT", "N° OT", "Nro", "Numero",
-        "Presupuesto", "Nro Presupuesto"
-    ])
+    # Documento / Ord.Rep.
+    doc_col = None
+    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
+        if len(df.columns) >= 5:
+            doc_col = df.columns[4]  # E = Ord.Rep.
+    if doc_col is None:
+        doc_col = detect_first_matching_column(df, [
+            "Ord.Rep.", "Ord Rep", "OT", "Orden", "Nro OT", "Numero OT", "N° OT",
+            "Nro", "Numero", "Presupuesto", "Nro Presupuesto"
+        ])
 
     # Cliente
     cliente_col = detect_first_matching_column(df, [
@@ -540,7 +550,13 @@ def op_summary(df_std: pd.DataFrame):
         "age_max": df_std["Antig_Dias"].max() if "Antig_Dias" in df_std.columns else np.nan,
     }
 
-def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str, enable_asesor_filter: bool = False):
+def render_operational_tab(
+    df_std: pd.DataFrame,
+    title: str,
+    purpose_text: str,
+    key_prefix: str,
+    enable_asesor_filter: bool = False
+):
     st.markdown(f"## {title}")
     st.caption(purpose_text)
     st.markdown("---")
@@ -551,32 +567,48 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str, 
 
     base = add_age_bucket(df_std.copy())
 
+    # Filtro multiselección por sucursal
+    sucursales_disp = sorted([s for s in base["Sucursal"].dropna().astype(str).str.strip().unique().tolist() if s != ""])
+    colf1, colf2 = st.columns([1.2, 1.8])
+    with colf1:
+        suc_sel = st.multiselect(
+            "Filtrar sucursal",
+            sucursales_disp,
+            default=sucursales_disp,
+            key=f"{key_prefix}_suc"
+        ) if sucursales_disp else []
+    with colf2:
+        st.caption("Todos los gráficos y tablas respetan este filtro.")
+
+    x0 = base[base["Sucursal"].astype(str).isin(suc_sel)].copy() if sucursales_disp else base.copy()
+
     # Filtro por recepcionista / asesor
     if enable_asesor_filter:
-        asesores_disp = sorted([a for a in base["Asesor"].dropna().astype(str).str.strip().unique().tolist() if a != ""])
+        asesores_disp = sorted([a for a in x0["Asesor"].dropna().astype(str).str.strip().unique().tolist() if a != ""])
         f1, f2 = st.columns([1.6, 1.4])
 
         with f1:
             asesor_sel = st.multiselect(
                 "Filtrar recepcionista / asesor",
                 asesores_disp,
-                default=asesores_disp
+                default=asesores_disp,
+                key=f"{key_prefix}_asesor"
             ) if asesores_disp else []
 
         with f2:
             st.caption("Los gráficos y tablas de abajo respetan este filtro.")
 
         if asesores_disp:
-            x = base[base["Asesor"].astype(str).isin(asesor_sel)].copy()
+            x = x0[x0["Asesor"].astype(str).isin(asesor_sel)].copy()
         else:
-            x = base.copy()
+            x = x0.copy()
 
-        # PASTEL POR RECEPCIONISTA
+        # Pasteles por recepcionista
         st.markdown("### Participación por recepcionista")
         p1, p2 = st.columns(2)
 
         ga_count = (
-            base.groupby("Asesor", as_index=False)
+            x0.groupby("Asesor", as_index=False)
             .agg(Casos=("Asesor","count"))
             .sort_values("Casos", ascending=False)
         )
@@ -592,7 +624,7 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str, 
                 st.plotly_chart(fig, use_container_width=True)
 
         ga_monto = (
-            base.groupby("Asesor", as_index=False)
+            x0.groupby("Asesor", as_index=False)
             .agg(Monto=("Monto","sum"))
             .sort_values("Monto", ascending=False)
         )
@@ -610,11 +642,11 @@ def render_operational_tab(df_std: pd.DataFrame, title: str, purpose_text: str, 
                 fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
     else:
-        x = base.copy()
+        x = x0.copy()
 
     summ = op_summary(x)
 
-    # MIX DE FACTURACIÓN
+    # Mix de facturación
     imp_cliente = x["Imp_Cliente"].sum(min_count=1) if "Imp_Cliente" in x.columns else np.nan
     imp_interna = x["Imp_Interna"].sum(min_count=1) if "Imp_Interna" in x.columns else np.nan
     imp_garantia = x["Imp_Garantia"].sum(min_count=1) if "Imp_Garantia" in x.columns else np.nan
@@ -1310,9 +1342,7 @@ with tab1:
             f"Días: {('—' if pd.isna(dias_transc) else int(dias_transc))}/{('—' if pd.isna(dias_total_mes) else int(dias_total_mes))}"
         )
         st.markdown(card_html_base(titulo, money_str(real), sub), unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style="margin-top:10px;">{pct_str(c)}</div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"**Cumpl. Acum.:** {pct_str(c)}")
         spark_evolucion(df_scope_month_for_spark)
 
     c1, c_mid, c2 = st.columns([1.0, 1.05, 1.0])
@@ -1565,6 +1595,7 @@ with tab5:
         abiertas_std,
         "🔧 Órdenes Abiertas",
         "Vehículos actualmente en taller con trabajos o reparaciones pendientes. Foco de gestión: destrabar backlog, acelerar terminación de trabajos y cierre de órdenes.",
+        key_prefix="abiertas",
         enable_asesor_filter=True
     )
 
@@ -1577,6 +1608,7 @@ with tab6:
         pfact_std,
         "🧾 Pendientes de Facturación",
         "Órdenes finalizadas que todavía no se transformaron en facturación/cobro. Foco de gestión: conversión a caja y cierre administrativo.",
+        key_prefix="pfact",
         enable_asesor_filter=True
     )
 
@@ -1594,7 +1626,8 @@ with tab7:
         estado_sel = st.multiselect(
             "Filtrar estado (columna H)",
             estados_disp,
-            default=estados_disp
+            default=estados_disp,
+            key="presup_estado"
         )
         presup_f = presup_std[presup_std["Estado"].astype(str).isin(estado_sel)].copy() if estados_disp else presup_std.copy()
 
@@ -1602,5 +1635,6 @@ with tab7:
             presup_f,
             "💬 Presupuestos Pendientes",
             "Presupuestos aún no aprobados por el cliente. Foco de gestión: seguimiento comercial, recuperación de ventas y priorización por importe/antigüedad.",
+            key_prefix="presup",
             enable_asesor_filter=False
         )
