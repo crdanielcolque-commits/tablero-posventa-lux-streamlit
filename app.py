@@ -1187,11 +1187,16 @@ def filter_hitos_by_month(df_hitos: pd.DataFrame, meses_keys: list[str]) -> pd.D
         mes_label = build_month_label(mes_key)
         mes_norm = norm_text(mes_label)
         mes_key_norm = norm_text(mes_key)
-        nombre_mes = norm_text(month_name_es(int(str(mes_key).split("-")[1]))
+        nombre_mes = norm_text(month_name_es(int(str(mes_key).split("-")[1])))
 
         for c in month_cols:
             s = tmp[c].astype(str).apply(norm_text)
-            mask = mask | s.str.contains(mes_key_norm, na=False) | s.str.contains(nombre_mes, na=False) | s.str.contains(mes_norm, na=False)
+            mask = (
+                mask
+                | s.str.contains(mes_key_norm, na=False)
+                | s.str.contains(nombre_mes, na=False)
+                | s.str.contains(mes_norm, na=False)
+            )
 
     filtrado = tmp[mask].copy()
     return filtrado if not filtrado.empty else tmp
