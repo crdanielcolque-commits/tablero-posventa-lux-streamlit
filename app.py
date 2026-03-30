@@ -1,11 +1,11 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.23
+# v2.3.24
 # + Filtros obligatorios con MULTISELECCIÓN:
 #   - Mes
 #   - Semana corte
 #   - Sucursal
-# + Lógica adaptada para trabajar con múltiples meses / semanas / sucursales
+# + Chips de multiselect en VERDE (no rojo)
 # + Export Excel profesional respetando filtros múltiples
 # + 3 tabs operativos:
 #   🔧 Órdenes Abiertas
@@ -140,6 +140,30 @@ def hide_sidebar_css():
     </style>
     """
 
+def multiselect_green_tags_css():
+    return """
+    <style>
+    div[data-baseweb="select"] span[data-baseweb="tag"]{
+        background-color: #16a34a !important;
+        border-color: #16a34a !important;
+    }
+    div[data-baseweb="select"] span[data-baseweb="tag"] *,
+    div[data-baseweb="select"] span[data-baseweb="tag"] span{
+        color: #ffffff !important;
+    }
+    div[data-baseweb="select"] span[data-baseweb="tag"] svg{
+        fill: #ffffff !important;
+        color: #ffffff !important;
+    }
+    div[data-baseweb="select"] span[data-baseweb="tag"] svg:hover{
+        fill: #eaffea !important;
+        color: #eaffea !important;
+    }
+    </style>
+    """
+
+st.markdown(multiselect_green_tags_css(), unsafe_allow_html=True)
+
 def norm_text(x: str) -> str:
     if x is None:
         return ""
@@ -191,13 +215,6 @@ def build_month_label(mes_key: str) -> str:
         return f"{month_name_es(p.month)} {p.year}"
     except Exception:
         return str(mes_key)
-
-def month_sort_key(label: str):
-    try:
-        dt = pd.to_datetime(label, format="%B %Y", errors="coerce")
-        return dt
-    except Exception:
-        return label
 
 def labels_from_mes_keys(mes_keys: list[str]) -> str:
     if not mes_keys:
@@ -402,18 +419,16 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     sheet_norm = norm_text(sheet_name)
 
     suc_col = None
-    if sheet_norm == "presupuestos":
-        if len(df.columns) >= 5:
-            suc_col = df.columns[4]
+    if sheet_norm == "presupuestos" and len(df.columns) >= 5:
+        suc_col = df.columns[4]
     if suc_col is None:
         suc_col = detect_first_matching_column(df, ["Suc.", "Sucursal", "Suc", "SUCURSAL"])
     if suc_col is None and len(df.columns) >= 1:
         suc_col = df.columns[0]
 
     doc_col = None
-    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
-        if len(df.columns) >= 5:
-            doc_col = df.columns[4]
+    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"] and len(df.columns) >= 5:
+        doc_col = df.columns[4]
     if doc_col is None:
         doc_col = detect_first_matching_column(df, [
             "Ord.Rep.", "Ord Rep", "OT", "Orden", "Nro OT", "Numero OT", "N° OT",
@@ -427,12 +442,10 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
     patente_col = detect_first_matching_column(df, ["Patente", "Dominio"])
 
     fecha_col = None
-    if sheet_norm == "abiertas":
-        if len(df.columns) >= 2:
-            fecha_col = df.columns[1]
-    elif sheet_norm in ["pendientes fact", "pendientes facturacion", "pend fact"]:
-        if len(df.columns) >= 3:
-            fecha_col = df.columns[2]
+    if sheet_norm == "abiertas" and len(df.columns) >= 2:
+        fecha_col = df.columns[1]
+    elif sheet_norm in ["pendientes fact", "pendientes facturacion", "pend fact"] and len(df.columns) >= 3:
+        fecha_col = df.columns[2]
     if fecha_col is None:
         fecha_col = detect_first_matching_column(df, [
             "Apertura", "Fecha", "Fecha Apertura", "Fecha Ingreso", "Ingreso",
@@ -440,9 +453,8 @@ def build_operational_standard(df_raw: pd.DataFrame, sheet_name: str) -> pd.Data
         ])
 
     asesor_col = None
-    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"]:
-        if len(df.columns) >= 15:
-            asesor_col = df.columns[14]
+    if sheet_norm in ["abiertas", "pendientes fact", "pendientes facturacion", "pend fact"] and len(df.columns) >= 15:
+        asesor_col = df.columns[14]
     if asesor_col is None:
         asesor_col = detect_first_matching_column(df, [
             "Asesor", "Recepcionista", "Asesor Servicio", "Responsable", "Vendedor"
@@ -538,12 +550,7 @@ def add_age_bucket(df_std: pd.DataFrame) -> pd.DataFrame:
 
 def op_summary(df_std: pd.DataFrame):
     if df_std is None or df_std.empty:
-        return {
-            "count": 0,
-            "monto": np.nan,
-            "age_avg": np.nan,
-            "age_max": np.nan
-        }
+        return {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
     return {
         "count": int(len(df_std)),
         "monto": df_std["Monto"].sum(min_count=1) if "Monto" in df_std.columns else np.nan,
@@ -614,7 +621,7 @@ def render_operational_tab(
 
         ga_count = (
             x0.groupby("Asesor", as_index=False)
-            .agg(Casos=("Asesor","count"))
+            .agg(Casos=("Asesor", "count"))
             .sort_values("Casos", ascending=False)
         )
         ga_count = ga_count[ga_count["Asesor"].astype(str).str.strip() != ""]
@@ -630,7 +637,7 @@ def render_operational_tab(
 
         ga_monto = (
             x0.groupby("Asesor", as_index=False)
-            .agg(Monto=("Monto","sum"))
+            .agg(Monto=("Monto", "sum"))
             .sort_values("Monto", ascending=False)
         )
         ga_monto = ga_monto[
@@ -687,12 +694,12 @@ def render_operational_tab(
     with a:
         st.markdown("### Casos por sucursal")
         g = x.groupby("Sucursal", as_index=False).agg(
-            Casos=("Sucursal","count"),
-            Monto=("Monto","sum"),
-            Antig_Prom=("Antig_Dias","mean"),
-            Imp_Cliente=("Imp_Cliente","sum"),
-            Imp_Interna=("Imp_Interna","sum"),
-            Imp_Garantia=("Imp_Garantia","sum"),
+            Casos=("Sucursal", "count"),
+            Monto=("Monto", "sum"),
+            Antig_Prom=("Antig_Dias", "mean"),
+            Imp_Cliente=("Imp_Cliente", "sum"),
+            Imp_Interna=("Imp_Interna", "sum"),
+            Imp_Garantia=("Imp_Garantia", "sum"),
         ).sort_values("Casos", ascending=False)
 
         fig = px.bar(g, x="Casos", y="Sucursal", orientation="h", text="Casos")
@@ -702,8 +709,8 @@ def render_operational_tab(
 
     with b:
         st.markdown("### Antigüedad")
-        ga = x.groupby("Age_Bucket", as_index=False).agg(Casos=("Age_Bucket","count"))
-        order = ["0-2 días","3-5 días","6-10 días","11-15 días","16+ días","Sin fecha"]
+        ga = x.groupby("Age_Bucket", as_index=False).agg(Casos=("Age_Bucket", "count"))
+        order = ["0-2 días", "3-5 días", "6-10 días", "11-15 días", "16+ días", "Sin fecha"]
         ga["Age_Bucket"] = pd.Categorical(ga["Age_Bucket"], categories=order, ordered=True)
         ga = ga.sort_values("Age_Bucket")
 
@@ -716,36 +723,36 @@ def render_operational_tab(
     t1, t2 = st.columns(2)
 
     cols = [c for c in [
-        "Sucursal","Asesor","Nro de Orden","Cliente","Patente","Fecha","Antig_Dias",
-        "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado"
+        "Sucursal", "Asesor", "Nro de Orden", "Cliente", "Patente", "Fecha", "Antig_Dias",
+        "Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto", "Estado"
     ] if c in x.columns]
 
     with t1:
         st.markdown("### Top más antiguos")
-        oldest = x.sort_values(["Antig_Dias","Monto"], ascending=[False, False]).head(15)[cols].copy()
-        oldest = format_money_cols(oldest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
+        oldest = x.sort_values(["Antig_Dias", "Monto"], ascending=[False, False]).head(15)[cols].copy()
+        oldest = format_money_cols(oldest, ["Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto"])
         st.dataframe(oldest, use_container_width=True, hide_index=True)
 
     with t2:
         if "Monto" in x.columns and x["Monto"].notna().any():
             st.markdown("### Top mayor importe")
-            biggest = x.sort_values(["Monto","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
-            biggest = format_money_cols(biggest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
+            biggest = x.sort_values(["Monto", "Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            biggest = format_money_cols(biggest, ["Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto"])
             st.dataframe(biggest, use_container_width=True, hide_index=True)
         else:
             st.markdown("### Vista adicional")
-            latest = x.sort_values(["Fecha","Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
-            latest = format_money_cols(latest, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
+            latest = x.sort_values(["Fecha", "Antig_Dias"], ascending=[False, False]).head(15)[cols].copy()
+            latest = format_money_cols(latest, ["Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto"])
             st.dataframe(latest, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     with st.expander("🔎 Detalle completo", expanded=False):
         cols = [c for c in [
-            "Sucursal","Asesor","Nro de Orden","Cliente","Patente","Fecha","Antig_Dias",
-            "Imp_Cliente","Imp_Interna","Imp_Garantia","Monto","Estado","Origen"
+            "Sucursal", "Asesor", "Nro de Orden", "Cliente", "Patente", "Fecha", "Antig_Dias",
+            "Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto", "Estado", "Origen"
         ] if c in x.columns]
         det = x[cols].copy()
-        det = format_money_cols(det, ["Imp_Cliente","Imp_Interna","Imp_Garantia","Monto"])
+        det = format_money_cols(det, ["Imp_Cliente", "Imp_Interna", "Imp_Garantia", "Monto"])
         st.dataframe(det, use_container_width=True, hide_index=True)
 
 # ---------------------------
@@ -767,7 +774,7 @@ def load_from_drive():
         df_dias = pd.read_excel(xls, sheet_name=dias_sheet)
         df_dias = df_dias.loc[:, ~df_dias.columns.astype(str).str.match(r"^Unnamed")]
     else:
-        df_dias = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
+        df_dias = pd.DataFrame(columns=["Mes", "Semana", "Dias habiles"])
 
     resumen_sheet = find_sheet_name(sheet_names, "Resumen del mes")
     if resumen_sheet is not None:
@@ -800,8 +807,8 @@ def load_from_drive():
 # VALIDACIÓN BASE
 # ---------------------------
 required = [
-    "Fecha","Semana","Sucursal","KPI","Categoria_KPI","Tipo_KPI",
-    "Real_$","Real_Q","Objetivo_$","Objetivo_Q","Cumplimiento_%","Estado"
+    "Fecha", "Semana", "Sucursal", "KPI", "Categoria_KPI", "Tipo_KPI",
+    "Real_$", "Real_Q", "Objetivo_$", "Objetivo_Q", "Cumplimiento_%", "Estado"
 ]
 missing = [c for c in required if c not in df.columns]
 if missing:
@@ -823,7 +830,7 @@ df["Mes_Nombre"] = df["Fecha"].dt.month.apply(month_name_es)
 df["Mes_norm"] = df["Mes_Nombre"].apply(norm_text)
 df["Semana_Mes"] = compute_semana_mes(df)
 
-for c in ["Real_$","Costo_$","Margen_$","Margen_%","Real_Q","Objetivo_$","Objetivo_Q","Cumplimiento_%"]:
+for c in ["Real_$", "Costo_$", "Margen_$", "Margen_%", "Real_Q", "Objetivo_$", "Objetivo_Q", "Cumplimiento_%"]:
     if c in df.columns:
         df[c] = df[c].apply(to_num_ar)
 
@@ -835,16 +842,15 @@ df["Sucursal"] = df["Sucursal"].astype(str).str.strip()
 def build_real_obj(row):
     if row["Tipo_KPI"] == "$":
         return row["Real_$"], row["Objetivo_$"]
-    else:
-        return row["Real_Q"], row["Objetivo_Q"]
+    return row["Real_Q"], row["Objetivo_Q"]
 
 tmp = df.apply(build_real_obj, axis=1, result_type="expand")
 df["Real_val"] = pd.to_numeric(tmp[0], errors="coerce").fillna(0.0)
-df["Obj_val"]  = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
+df["Obj_val"] = pd.to_numeric(tmp[1], errors="coerce").fillna(0.0)
 
 if df_dias_habiles is None or df_dias_habiles.empty:
-    df_dias_habiles = pd.DataFrame(columns=["Mes","Semana","Dias habiles"])
-for col in ["Mes","Semana","Dias habiles"]:
+    df_dias_habiles = pd.DataFrame(columns=["Mes", "Semana", "Dias habiles"])
+for col in ["Mes", "Semana", "Dias habiles"]:
     if col not in df_dias_habiles.columns:
         df_dias_habiles[col] = np.nan
 
@@ -911,7 +917,6 @@ def render_filters(area="sidebar"):
         st.session_state["show_obj0"] = True
 
     container = st.sidebar if area == "sidebar" else st.container()
-
     sucursales = sorted(df["Sucursal"].dropna().unique().tolist())
 
     with container:
@@ -1020,14 +1025,12 @@ if not selected_all_suc:
 df_cut = df_scope[df_scope["Semana_Num"].isin(semanas_sel)].copy()
 df_month = df_scope.copy()
 
-# Días hábiles consolidados para meses seleccionados
 dias_total_mes = np.nan
 dias_transc = np.nan
 
 if meses_sel:
     meses_nums_sel = [int(str(m).split("-")[1]) for m in meses_sel]
     meses_norm_sel = [norm_text(month_name_es(mn)) for mn in meses_nums_sel]
-
     dias_mes = df_dias_habiles[df_dias_habiles["Mes_norm"].isin(meses_norm_sel)].copy()
     if not dias_mes.empty:
         dias_total_mes = float(dias_mes["Dias habiles"].sum())
@@ -1037,8 +1040,8 @@ if meses_sel:
 # P&L aperturas del filtro elegido
 # ---------------------------
 def compute_openings_pl(dfc):
-    rep_open = sorted(dfc[(dfc["KPI"].str.upper()=="REPUESTOS") & (dfc["Tipo_KPI"]=="$")]["Categoria_KPI"].dropna().unique().tolist())
-    srv_open = sorted(dfc[(dfc["KPI"].str.upper()=="SERVICIOS") & (dfc["Tipo_KPI"]=="$")]["Categoria_KPI"].dropna().unique().tolist())
+    rep_open = sorted(dfc[(dfc["KPI"].str.upper() == "REPUESTOS") & (dfc["Tipo_KPI"] == "$")]["Categoria_KPI"].dropna().unique().tolist())
+    srv_open = sorted(dfc[(dfc["KPI"].str.upper() == "SERVICIOS") & (dfc["Tipo_KPI"] == "$")]["Categoria_KPI"].dropna().unique().tolist())
     return rep_open, srv_open
 
 rep_open, srv_open = compute_openings_pl(df_cut)
@@ -1099,7 +1102,7 @@ def proyectar_eom_runrate(real_acum: float, dias_trans: float, dias_mes_total: f
     return (float(real_acum) / float(dias_trans)) * float(dias_mes_total)
 
 def micro_sucursal(d: pd.DataFrame):
-    g = d.groupby("Sucursal", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
+    g = d.groupby("Sucursal", as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
     g = apply_cap_visual(g, cap_on, cap_val)
@@ -1107,7 +1110,7 @@ def micro_sucursal(d: pd.DataFrame):
     return g
 
 def micro_aperturas(d: pd.DataFrame):
-    g = d.groupby("Categoria_KPI", as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum"))
+    g = d.groupby("Categoria_KPI", as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
     g = apply_cap_visual(g, cap_on, cap_val)
@@ -1119,9 +1122,9 @@ def ranking_sucursal_apertura_micro(d: pd.DataFrame, top_n: int, show_zero: bool
     if not show_zero:
         x = x[x["Obj_val"] > 0].copy()
 
-    g = x.groupby(["Sucursal","Categoria_KPI"], as_index=False).agg(
-        Real=("Real_val","sum"),
-        Obj=("Obj_val","sum")
+    g = x.groupby(["Sucursal", "Categoria_KPI"], as_index=False).agg(
+        Real=("Real_val", "sum"),
+        Obj=("Obj_val", "sum")
     )
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False).head(top_n).copy()
@@ -1134,9 +1137,9 @@ def principal_driver_gap(d_pl: pd.DataFrame):
     x = apply_obj0_filter(d_pl.copy(), show_obj0)
     if x.empty:
         return None
-    g = x.groupby(["KPI","Categoria_KPI"], as_index=False).agg(
-        Real=("Real_val","sum"),
-        Obj=("Obj_val","sum")
+    g = x.groupby(["KPI", "Categoria_KPI"], as_index=False).agg(
+        Real=("Real_val", "sum"),
+        Obj=("Obj_val", "sum")
     )
     g["Gap"] = g["Obj"] - g["Real"]
     g = g.sort_values("Gap", ascending=False)
@@ -1147,7 +1150,7 @@ def spark_evolucion(df_scope_month: pd.DataFrame):
     if df_scope_month is None or df_scope_month.empty:
         return
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
-    g = x.groupby(["Mes","Semana_Mes"], as_index=False).agg(Real=("Real_val","sum"), Obj=("Obj_val","sum")).sort_values(["Mes","Semana_Mes"])
+    g = x.groupby(["Mes", "Semana_Mes"], as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum")).sort_values(["Mes", "Semana_Mes"])
     g["Cumpl_sem"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl_sem"].isna()].copy()
     if g.empty:
@@ -1243,18 +1246,18 @@ if meses_sel:
         dias_total_mes_xls = float(dias_mes_xls["Dias habiles"].sum())
         dias_transc_xls = float(dias_mes_xls[dias_mes_xls["Semana"].isin([int(x) for x in sem_export])]["Dias habiles"].sum())
 
-d_pl_xls = df_cut_xls[df_cut_xls["Tipo_KPI"]=="$"].copy()
-d_rep_xls = d_pl_xls[d_pl_xls["KPI"].str.upper()=="REPUESTOS"].copy()
+d_pl_xls = df_cut_xls[df_cut_xls["Tipo_KPI"] == "$"].copy()
+d_rep_xls = d_pl_xls[d_pl_xls["KPI"].str.upper() == "REPUESTOS"].copy()
 d_rep_xls = d_rep_xls[d_rep_xls["Categoria_KPI"].isin(rep_sel)].copy()
-d_srv_xls = d_pl_xls[d_pl_xls["KPI"].str.upper()=="SERVICIOS"].copy()
+d_srv_xls = d_pl_xls[d_pl_xls["KPI"].str.upper() == "SERVICIOS"].copy()
 d_srv_xls = d_srv_xls[d_srv_xls["Categoria_KPI"].isin(srv_sel)].copy()
 
 rep_real_xls, rep_obj_xls, rep_c_xls = summarize_segment(d_rep_xls)
 srv_real_xls, srv_obj_xls, srv_c_xls = summarize_segment(d_srv_xls)
 
 total_real_xls = rep_real_xls + srv_real_xls
-total_obj_xls  = rep_obj_xls + srv_obj_xls
-total_c_xls    = safe_ratio(total_real_xls, total_obj_xls)
+total_obj_xls = rep_obj_xls + srv_obj_xls
+total_c_xls = safe_ratio(total_real_xls, total_obj_xls)
 
 rep_proy_xls = proyectar_eom_runrate(rep_real_xls, dias_transc_xls, dias_total_mes_xls)
 srv_proy_xls = proyectar_eom_runrate(srv_real_xls, dias_transc_xls, dias_total_mes_xls)
@@ -1262,8 +1265,8 @@ total_proy_xls = proyectar_eom_runrate(total_real_xls, dias_transc_xls, dias_tot
 
 rep_by_suc_xls = micro_sucursal(apply_obj0_filter(d_rep_xls, show_obj0))
 srv_by_suc_xls = micro_sucursal(apply_obj0_filter(d_srv_xls, show_obj0))
-rep_by_ap_xls  = micro_aperturas(apply_obj0_filter(d_rep_xls, show_obj0))
-srv_by_ap_xls  = micro_aperturas(apply_obj0_filter(d_srv_xls, show_obj0))
+rep_by_ap_xls = micro_aperturas(apply_obj0_filter(d_rep_xls, show_obj0))
+srv_by_ap_xls = micro_aperturas(apply_obj0_filter(d_srv_xls, show_obj0))
 
 top_n_xls = int(st.session_state.get("top_n_rank", 10))
 show_zero_rank_xls = bool(st.session_state.get("show_zero_rank", False))
@@ -1278,12 +1281,21 @@ pfact_std = build_operational_standard(df_pfact_raw, "Pendientes Fact")
 presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
 
 resumen_xls = pd.DataFrame([
-    {"Bloque":"Repuestos", "Real_Acum":rep_real_xls, "Obj_Acum":rep_obj_xls, "Cumpl_Acum":rep_c_xls, "Proy_EOM_RunRate":rep_proy_xls,
-     "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls), "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)},
-    {"Bloque":"Servicios", "Real_Acum":srv_real_xls, "Obj_Acum":srv_obj_xls, "Cumpl_Acum":srv_c_xls, "Proy_EOM_RunRate":srv_proy_xls,
-     "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls), "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)},
-    {"Bloque":"Total Postventa", "Real_Acum":total_real_xls, "Obj_Acum":total_obj_xls, "Cumpl_Acum":total_c_xls, "Proy_EOM_RunRate":total_proy_xls,
-     "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls), "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)},
+    {
+        "Bloque": "Repuestos", "Real_Acum": rep_real_xls, "Obj_Acum": rep_obj_xls, "Cumpl_Acum": rep_c_xls,
+        "Proy_EOM_RunRate": rep_proy_xls, "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls),
+        "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)
+    },
+    {
+        "Bloque": "Servicios", "Real_Acum": srv_real_xls, "Obj_Acum": srv_obj_xls, "Cumpl_Acum": srv_c_xls,
+        "Proy_EOM_RunRate": srv_proy_xls, "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls),
+        "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)
+    },
+    {
+        "Bloque": "Total Postventa", "Real_Acum": total_real_xls, "Obj_Acum": total_obj_xls, "Cumpl_Acum": total_c_xls,
+        "Proy_EOM_RunRate": total_proy_xls, "Dias_Transc": (np.nan if pd.isna(dias_transc_xls) else dias_transc_xls),
+        "Dias_Mes": (np.nan if pd.isna(dias_total_mes_xls) else dias_total_mes_xls)
+    },
 ])
 
 meta_xls = pd.DataFrame([{
@@ -1357,20 +1369,20 @@ with tab1:
     st.markdown("## 🧩 P&L — Macro → Micro")
     st.markdown("---")
 
-    d_pl = df_cut[df_cut["Tipo_KPI"]=="$"].copy()
+    d_pl = df_cut[df_cut["Tipo_KPI"] == "$"].copy()
 
-    d_rep = d_pl[d_pl["KPI"].str.upper()=="REPUESTOS"].copy()
+    d_rep = d_pl[d_pl["KPI"].str.upper() == "REPUESTOS"].copy()
     d_rep = d_rep[d_rep["Categoria_KPI"].isin(rep_sel)].copy()
 
-    d_srv = d_pl[d_pl["KPI"].str.upper()=="SERVICIOS"].copy()
+    d_srv = d_pl[d_pl["KPI"].str.upper() == "SERVICIOS"].copy()
     d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
 
     rep_real, rep_obj, rep_c = summarize_segment(d_rep)
     srv_real, srv_obj, srv_c = summarize_segment(d_srv)
 
     total_real = rep_real + srv_real
-    total_obj  = rep_obj + srv_obj
-    total_c    = safe_ratio(total_real, total_obj)
+    total_obj = rep_obj + srv_obj
+    total_c = safe_ratio(total_real, total_obj)
 
     rep_proy = proyectar_eom_runrate(rep_real, dias_transc, dias_total_mes)
     srv_proy = proyectar_eom_runrate(srv_real, dias_transc, dias_total_mes)
@@ -1387,9 +1399,9 @@ with tab1:
         f"{driver_txt}"
     )
 
-    rep_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="REPUESTOS")].copy()
+    rep_month = df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS")].copy()
     rep_month = rep_month[rep_month["Categoria_KPI"].isin(rep_sel)].copy()
-    srv_month = df_month[(df_month["Tipo_KPI"]=="$") & (df_month["KPI"].str.upper()=="SERVICIOS")].copy()
+    srv_month = df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS")].copy()
     srv_month = srv_month[srv_month["Categoria_KPI"].isin(srv_sel)].copy()
     total_month = pd.concat([rep_month, srv_month], ignore_index=True)
 
@@ -1475,7 +1487,7 @@ with tab1:
 
     cA, cB, cC, cD = st.columns([1.1, 1.2, 1.2, 1.5])
     with cA:
-        top_n = st.selectbox("Top N", [5,10,15,20,30], index=1)
+        top_n = st.selectbox("Top N", [5, 10, 15, 20, 30], index=1)
         st.session_state["top_n_rank"] = int(top_n)
     with cB:
         rep_micro_choice = st.selectbox("Repuestos (micro)", ["Todas las aperturas"] + rep_open, index=0)
@@ -1523,7 +1535,7 @@ with tab2:
     st.markdown("## 📌 KPIs (resto) — Macro → Micro")
     st.markdown("---")
 
-    resto = df_cut[~df_cut["KPI"].str.upper().isin(["REPUESTOS","SERVICIOS"])].copy()
+    resto = df_cut[~df_cut["KPI"].str.upper().isin(["REPUESTOS", "SERVICIOS"])].copy()
     resto = apply_obj0_filter(resto, show_obj0)
 
     kpis_resto = sorted(resto["KPI"].unique().tolist())
@@ -1538,29 +1550,29 @@ with tab2:
         for t in tipos:
             xt = x[x["Tipo_KPI"] == t].copy()
             real = xt["Real_val"].sum()
-            obj  = xt["Obj_val"].sum()
-            c    = safe_ratio(real, obj)
+            obj = xt["Obj_val"].sum()
+            c = safe_ratio(real, obj)
 
             st.markdown(
                 card_html_base(
                     f"{kpi_sel} ({t}) — Cumplimiento (Acum.)",
-                    (money_str(real) if t=="$" else qty_str(real)),
-                    f"Real {(money_str(real) if t=='$' else qty_str(real))} | Obj {(money_str(obj) if t=='$' else qty_str(obj))}"
+                    (money_str(real) if t == "$" else qty_str(real)),
+                    f"Real {(money_str(real) if t == '$' else qty_str(real))} | Obj {(money_str(obj) if t == '$' else qty_str(obj))}"
                 ),
                 unsafe_allow_html=True
             )
             st.markdown(f"**Cumpl. Acum.:** {pct_str(c)}")
 
             g = xt.groupby("Sucursal", as_index=False).agg(
-                Real=("Real_val","sum"),
-                Obj=("Obj_val","sum")
+                Real=("Real_val", "sum"),
+                Obj=("Obj_val", "sum")
             )
             g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
             g = g[~g["Cumpl"].isna()].copy().sort_values("Cumpl", ascending=False)
             g = apply_cap_visual(g, cap_on, cap_val)
 
             g["label"] = g.apply(
-                lambda r: f"{pct_str(r['Cumpl'])} | {(money_str(r['Real']) if t=='$' else qty_str(r['Real']))}/{(money_str(r['Obj']) if t=='$' else qty_str(r['Obj']))}",
+                lambda r: f"{pct_str(r['Cumpl'])} | {(money_str(r['Real']) if t == '$' else qty_str(r['Real']))}/{(money_str(r['Obj']) if t == '$' else qty_str(r['Obj']))}",
                 axis=1
             )
 
@@ -1575,7 +1587,7 @@ with tab2:
 
         st.markdown("---")
         with st.expander("🔎 Auditoría (KPIs resto)", expanded=False):
-            detail = x.copy().sort_values(["Mes","Semana_Num","Sucursal","KPI","Categoria_KPI"])
+            detail = x.copy().sort_values(["Mes", "Semana_Num", "Sucursal", "KPI", "Categoria_KPI"])
             st.dataframe(detail, use_container_width=True, hide_index=True)
 
 # ============================================================
@@ -1597,9 +1609,9 @@ with tab3:
     d = d[d["Semana_Num"].isin(semanas_sel)].copy()
     d = apply_obj0_filter(d, show_obj0)
 
-    g = d.groupby(["KPI","Categoria_KPI","Tipo_KPI"], as_index=False).agg(
-        Real=("Real_val","sum"),
-        Obj=("Obj_val","sum")
+    g = d.groupby(["KPI", "Categoria_KPI", "Tipo_KPI"], as_index=False).agg(
+        Real=("Real_val", "sum"),
+        Obj=("Obj_val", "sum")
     )
     g["Gap"] = g["Obj"] - g["Real"]
     g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
@@ -1609,11 +1621,11 @@ with tab3:
     if g.empty:
         st.info("Sin desvíos (o todo Obj=0).")
     else:
-        show_n = st.selectbox("Top N desvíos", [10,20,30,50], index=1)
+        show_n = st.selectbox("Top N desvíos", [10, 20, 30, 50], index=1)
         gg = g.head(show_n).copy()
         gg["key"] = gg["KPI"].astype(str) + " — " + gg["Categoria_KPI"].astype(str) + " (" + gg["Tipo_KPI"].astype(str) + ")"
         gg["label"] = gg.apply(
-            lambda r: f"Gap {(money_str(r['Gap']) if r['Tipo_KPI']=='$' else qty_str(r['Gap']))} | {pct_str(r['Cumpl'])}",
+            lambda r: f"Gap {(money_str(r['Gap']) if r['Tipo_KPI'] == '$' else qty_str(r['Gap']))} | {pct_str(r['Cumpl'])}",
             axis=1
         )
 
