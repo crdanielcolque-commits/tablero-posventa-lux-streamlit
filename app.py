@@ -1,11 +1,12 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.24
+# v2.3.25
 # + Filtros obligatorios con MULTISELECCIÓN:
 #   - Mes
 #   - Semana corte
 #   - Sucursal
 # + Chips de multiselect en VERDE (no rojo)
+# + Fix StreamlitDuplicateElementId en sparklines P&L
 # + Export Excel profesional respetando filtros múltiples
 # + 3 tabs operativos:
 #   🔧 Órdenes Abiertas
@@ -633,7 +634,7 @@ def render_operational_tab(
             else:
                 fig = px.pie(ga_count, names="Asesor", values="Casos")
                 fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_pie_cantidad")
 
         ga_monto = (
             x0.groupby("Asesor", as_index=False)
@@ -652,7 +653,7 @@ def render_operational_tab(
             else:
                 fig = px.pie(ga_monto, names="Asesor", values="Monto")
                 fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_pie_monto")
     else:
         x = x0.copy()
 
@@ -705,7 +706,7 @@ def render_operational_tab(
         fig = px.bar(g, x="Casos", y="Sucursal", orientation="h", text="Casos")
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
         fig.update_traces(textposition="inside")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_bar_sucursal")
 
     with b:
         st.markdown("### Antigüedad")
@@ -717,7 +718,7 @@ def render_operational_tab(
         fig = px.bar(ga, x="Age_Bucket", y="Casos", text="Casos")
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="")
         fig.update_traces(textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_bar_antig")
 
     st.markdown("---")
     t1, t2 = st.columns(2)
@@ -1146,13 +1147,19 @@ def principal_driver_gap(d_pl: pd.DataFrame):
     row = g.iloc[0]
     return {"KPI": str(row["KPI"]), "Cat": str(row["Categoria_KPI"]), "Gap": float(row["Gap"])}
 
-def spark_evolucion(df_scope_month: pd.DataFrame):
+def spark_evolucion(df_scope_month: pd.DataFrame, chart_key: str):
     if df_scope_month is None or df_scope_month.empty:
         return
+
     x = apply_obj0_filter(df_scope_month.copy(), show_obj0)
-    g = x.groupby(["Mes", "Semana_Mes"], as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum")).sort_values(["Mes", "Semana_Mes"])
+    g = (
+        x.groupby(["Mes", "Semana_Mes"], as_index=False)
+         .agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
+         .sort_values(["Mes", "Semana_Mes"])
+    )
     g["Cumpl_sem"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
     g = g[~g["Cumpl_sem"].isna()].copy()
+
     if g.empty:
         return
 
@@ -1166,9 +1173,15 @@ def spark_evolucion(df_scope_month: pd.DataFrame):
 
     fig = px.line(gg, x="Eje", y="Cumpl_plot", markers=True, text="txt")
     fig.update_traces(mode="lines+markers+text", textposition="top center")
-    fig.update_layout(height=150, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="", yaxis_title="")
+    fig.update_layout(
+        height=150,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis_title="",
+        yaxis_title=""
+    )
     fig.update_yaxes(tickformat=".0%")
-    st.plotly_chart(fig, use_container_width=True)
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 def filter_hitos_by_month(df_hitos: pd.DataFrame, meses_keys: list[str]) -> pd.DataFrame:
     if df_hitos is None or df_hitos.empty:
@@ -1405,7 +1418,7 @@ with tab1:
     srv_month = srv_month[srv_month["Categoria_KPI"].isin(srv_sel)].copy()
     total_month = pd.concat([rep_month, srv_month], ignore_index=True)
 
-    def macro_block(titulo, real, obj, proy, df_scope_month_for_spark):
+    def macro_block(titulo, real, obj, proy, df_scope_month_for_spark, chart_key):
         c = safe_ratio(real, obj)
         sub = (
             f"Real {money_str(real)} | Obj {money_str(obj)} | "
@@ -1414,21 +1427,42 @@ with tab1:
         )
         st.markdown(card_html_base(titulo, money_str(real), sub), unsafe_allow_html=True)
         st.markdown(f"**Cumpl. Acum.:** {pct_str(c)}")
-        spark_evolucion(df_scope_month_for_spark)
+        spark_evolucion(df_scope_month_for_spark, chart_key=chart_key)
 
     c1, c_mid, c2 = st.columns([1.0, 1.05, 1.0])
 
     with c1:
         st.markdown("### 🧩 REPUESTOS (P&L)")
-        macro_block("Repuestos — Real (Acum.)", rep_real, rep_obj, rep_proy, rep_month)
+        macro_block(
+            "Repuestos — Real (Acum.)",
+            rep_real,
+            rep_obj,
+            rep_proy,
+            rep_month,
+            chart_key="spark_rep_pyl"
+        )
 
     with c_mid:
         st.markdown("### 🧩 TOTAL POSTVENTA (P&L)")
-        macro_block("Total Postventa — Real (Acum.)", total_real, total_obj, total_proy, total_month)
+        macro_block(
+            "Total Postventa — Real (Acum.)",
+            total_real,
+            total_obj,
+            total_proy,
+            total_month,
+            chart_key="spark_total_pyl"
+        )
 
     with c2:
         st.markdown("### 🧩 SERVICIOS (P&L)")
-        macro_block("Servicios — Real (Acum.)", srv_real, srv_obj, srv_proy, srv_month)
+        macro_block(
+            "Servicios — Real (Acum.)",
+            srv_real,
+            srv_obj,
+            srv_proy,
+            srv_month,
+            chart_key="spark_srv_pyl"
+        )
 
     st.markdown("---")
     st.markdown("### Cumplimiento por Sucursal — (acumulado)")
@@ -1443,7 +1477,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="Sucursal", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_rep_sucursal")
 
     with b:
         st.markdown("**Servicios — por sucursal**")
@@ -1454,7 +1488,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="Sucursal", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_srv_sucursal")
 
     st.markdown("---")
     st.markdown("### Aperturas — micro (cumplimiento acumulado)")
@@ -1469,7 +1503,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_rep_aperturas")
 
     with r:
         st.markdown("**Servicios — por apertura**")
@@ -1480,7 +1514,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="Categoria_KPI", orientation="h", text="label")
             fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_srv_aperturas")
 
     st.markdown("---")
     st.markdown("## 🎯 Micro — ranking sucursal + apertura")
@@ -1515,7 +1549,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="key", orientation="h", text="label")
             fig.update_layout(height=460, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_rep_micro")
 
     with ss:
         st.markdown("### Servicios — sucursal + apertura (micro)")
@@ -1526,7 +1560,7 @@ with tab1:
             fig = px.bar(g, x="Cumpl_plot", y="key", orientation="h", text="label")
             fig.update_layout(height=460, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
             fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="pyl_srv_micro")
 
 # ============================================================
 # TAB 2 — KPIs resto
@@ -1583,7 +1617,7 @@ with tab2:
                 fig = px.bar(g, x="Cumpl_plot", y="Sucursal", orientation="h", text="label")
                 fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Cumplimiento (visual)")
                 fig.update_traces(textposition="inside")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"kpi_resto_{kpi_sel}_{t}")
 
         st.markdown("---")
         with st.expander("🔎 Auditoría (KPIs resto)", expanded=False):
@@ -1632,7 +1666,7 @@ with tab3:
         fig = px.bar(gg, x="Gap", y="key", orientation="h", text="label")
         fig.update_layout(height=520, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Gap (Obj - Real)")
         fig.update_traces(textposition="inside")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="gestion_desvios_gap")
 
         with st.expander("🔎 Auditoría (Gestión)", expanded=False):
             st.dataframe(g, use_container_width=True, hide_index=True)
