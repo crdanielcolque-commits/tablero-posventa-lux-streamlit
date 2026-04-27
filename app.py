@@ -1,6 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.25
+# v2.3.26 — Dirección + Gestión Inteligente
 # + Filtros obligatorios con MULTISELECCIÓN:
 #   - Mes
 #   - Semana corte
@@ -1611,10 +1611,282 @@ def render_tab_cierre_gap():
         )
 
 
+
+# ============================================================
+# NUEVO NIVEL — DIRECCIÓN + GESTIÓN INTELIGENTE
+# ============================================================
+def _status_from_cumpl(cumpl):
+    if pd.isna(cumpl):
+        return {
+            "emoji": "⚪",
+            "label": "Sin lectura",
+            "msg": "No hay objetivo suficiente para calcular cumplimiento.",
+            "color": "gray"
+        }
+    if cumpl >= 1:
+        return {
+            "emoji": "🟢",
+            "label": "En objetivo",
+            "msg": "Postventa está cumpliendo o superando el objetivo acumulado.",
+            "color": "green"
+        }
+    if cumpl >= 0.90:
+        return {
+            "emoji": "🟡",
+            "label": "Cerca del objetivo",
+            "msg": "Postventa está cerca del objetivo, pero requiere seguimiento de desvíos.",
+            "color": "yellow"
+        }
+    return {
+        "emoji": "🔴",
+        "label": "En riesgo",
+        "msg": "Postventa presenta un desvío relevante frente al objetivo acumulado.",
+        "color": "red"
+    }
+
+def _fmt_gap(valor, tipo_kpi):
+    if str(tipo_kpi).strip() == "$":
+        return money_str(valor)
+    return qty_str(valor)
+
+def _metric_delta_pts(cumpl):
+    if pd.isna(cumpl):
+        return None
+    return f"{(float(cumpl) - 1) * 100:.1f} pts vs objetivo"
+
+def build_direction_context():
+    d_pl = df_cut[df_cut["Tipo_KPI"] == "$"].copy()
+
+    d_rep = d_pl[d_pl["KPI"].str.upper() == "REPUESTOS"].copy()
+    d_rep = d_rep[d_rep["Categoria_KPI"].isin(rep_sel)].copy()
+
+    d_srv = d_pl[d_pl["KPI"].str.upper() == "SERVICIOS"].copy()
+    d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
+
+    rep_real, rep_obj, rep_c = summarize_segment(d_rep)
+    srv_real, srv_obj, srv_c = summarize_segment(d_srv)
+
+    total_real = rep_real + srv_real
+    total_obj = rep_obj + srv_obj
+    total_c = safe_ratio(total_real, total_obj)
+    total_proy = proyectar_eom_runrate(total_real, dias_transc, dias_total_mes)
+
+    gap_total = total_real - total_obj
+    falta_total = max(total_obj - total_real, 0)
+
+    d_q = apply_obj0_filter(df_cut[df_cut["Tipo_KPI"] != "$"].copy(), show_obj0)
+    q_real = d_q["Real_val"].sum() if not d_q.empty else np.nan
+    q_obj = d_q["Obj_val"].sum() if not d_q.empty else np.nan
+    q_c = safe_ratio(q_real, q_obj) if not d_q.empty else np.nan
+
+    driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
+
+    op_ab = op_summary(abiertas_std) if "abiertas_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+    op_pf = op_summary(pfact_std) if "pfact_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+    op_pr = op_summary(presup_std) if "presup_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+
+    return {
+        "rep_real": rep_real, "rep_obj": rep_obj, "rep_c": rep_c,
+        "srv_real": srv_real, "srv_obj": srv_obj, "srv_c": srv_c,
+        "total_real": total_real, "total_obj": total_obj, "total_c": total_c,
+        "total_proy": total_proy, "gap_total": gap_total, "falta_total": falta_total,
+        "q_real": q_real, "q_obj": q_obj, "q_c": q_c,
+        "driver": driver,
+        "d_rep": d_rep, "d_srv": d_srv,
+        "op_abiertas": op_ab, "op_pfact": op_pf, "op_presup": op_pr
+    }
+
+def build_direction_narrative(ctx):
+    status = _status_from_cumpl(ctx["total_c"])
+    partes = [f"{status['emoji']} {status['msg']}"]
+
+    if pd.notna(ctx["total_c"]):
+        partes.append(f"Cumplimiento acumulado: {pct_str(ctx['total_c'])}.")
+
+    if ctx["falta_total"] > 0:
+        partes.append(f"Falta recuperar {money_str(ctx['falta_total'])} para llegar al objetivo del corte.")
+
+    if pd.notna(ctx["total_proy"]) and pd.notna(ctx["total_obj"]) and ctx["total_obj"] > 0:
+        proy_c = safe_ratio(ctx["total_proy"], ctx["total_obj"])
+        if pd.notna(proy_c):
+            if proy_c >= 1:
+                partes.append(f"Con el ritmo actual, la proyección de cierre queda en {pct_str(proy_c)} del objetivo.")
+            else:
+                partes.append(f"Con el ritmo actual, la proyección de cierre quedaría en {pct_str(proy_c)} del objetivo.")
+
+    if ctx["driver"]:
+        partes.append(f"El principal foco económico es {ctx['driver']['KPI']} / {ctx['driver']['Cat']} con gap de {money_str(ctx['driver']['Gap'])}.")
+
+    if pd.notna(ctx["q_c"]) and ctx["q_c"] < 1:
+        partes.append(f"Los KPIs de volumen/cantidad están al {pct_str(ctx['q_c'])}; revisar tráfico, conversión y productividad.")
+
+    return " ".join(partes)
+
+def build_action_recommendations(ctx):
+    acciones = []
+
+    if pd.notna(ctx["total_c"]) and ctx["total_c"] < 0.90:
+        acciones.append("Priorizar recuperación del gap económico por sucursal y apertura antes de profundizar análisis secundarios.")
+    elif pd.notna(ctx["total_c"]) and ctx["total_c"] < 1:
+        acciones.append("Mantener control diario del avance, porque el desvío todavía parece recuperable.")
+    else:
+        acciones.append("Sostener ritmo y proteger margen; evitar que el cumplimiento se explique solo por precio o mix.")
+
+    if ctx["driver"]:
+        acciones.append(f"Asignar responsable específico para {ctx['driver']['KPI']} / {ctx['driver']['Cat']} y revisar plan de cierre.")
+
+    if ctx["op_pfact"]["monto"] is not None and pd.notna(ctx["op_pfact"]["monto"]) and ctx["op_pfact"]["monto"] > 0:
+        acciones.append(f"Atacar pendientes de facturación: hay {money_str(ctx['op_pfact']['monto'])} de potencial administrativo.")
+
+    if ctx["op_abiertas"]["count"] > 0:
+        acciones.append(f"Revisar órdenes abiertas: {qty_str(ctx['op_abiertas']['count'])} casos activos pueden convertirse en facturación o demora operativa.")
+
+    if ctx["op_presup"]["count"] > 0:
+        acciones.append(f"Activar seguimiento comercial de presupuestos: {qty_str(ctx['op_presup']['count'])} oportunidades pendientes.")
+
+    return acciones[:5]
+
+def render_direction_heatmap(ctx):
+    base = pd.concat([ctx["d_rep"], ctx["d_srv"]], ignore_index=True)
+    base = apply_obj0_filter(base, show_obj0)
+
+    if base.empty:
+        st.info("No hay datos económicos para construir la matriz Dirección.")
+        return
+
+    g = base.groupby(["Sucursal", "KPI"], as_index=False).agg(
+        Real=("Real_val", "sum"),
+        Obj=("Obj_val", "sum")
+    )
+    g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    g["GAP"] = g["Real"] - g["Obj"]
+    g = g[~g["Cumpl"].isna()].copy()
+
+    if g.empty:
+        st.info("No hay cumplimiento calculable para la matriz.")
+        return
+
+    g["Estado"] = g["Cumpl"].apply(lambda x: _status_from_cumpl(x)["label"])
+    g_show = g.sort_values(["Cumpl", "GAP"], ascending=[True, True]).copy()
+    g_show["Cumplimiento"] = g_show["Cumpl"].apply(pct_str)
+    g_show["Real"] = g_show["Real"].apply(money_str)
+    g_show["Objetivo"] = g_show["Obj"].apply(money_str)
+    g_show["GAP"] = g_show["GAP"].apply(money_str)
+
+    st.dataframe(
+        g_show[["Sucursal", "KPI", "Real", "Objetivo", "Cumplimiento", "GAP", "Estado"]],
+        use_container_width=True,
+        hide_index=True
+    )
+
+def render_direction_tab():
+    st.markdown("## 🏢 Dirección — Resumen Ejecutivo")
+    st.caption(
+        "Vista de lectura rápida: resultado, proyección, causa principal y focos de acción. "
+        "Respeta los filtros de mes, semana, sucursal y aperturas P&L."
+    )
+    st.markdown("---")
+
+    ctx = build_direction_context()
+    status = _status_from_cumpl(ctx["total_c"])
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric("Facturación acumulada", money_str(ctx["total_real"]), delta=_metric_delta_pts(ctx["total_c"]))
+    with k2:
+        st.metric("Objetivo acumulado", money_str(ctx["total_obj"]))
+    with k3:
+        st.metric("Cumplimiento", pct_str(ctx["total_c"]), delta=_metric_delta_pts(ctx["total_c"]))
+    with k4:
+        st.metric("Proyección cierre", money_str(ctx["total_proy"]))
+
+    if status["color"] == "green":
+        st.success(f"{status['emoji']} {status['label']} — {status['msg']}")
+    elif status["color"] == "yellow":
+        st.warning(f"{status['emoji']} {status['label']} — {status['msg']}")
+    elif status["color"] == "red":
+        st.error(f"{status['emoji']} {status['label']} — {status['msg']}")
+    else:
+        st.info(f"{status['emoji']} {status['label']} — {status['msg']}")
+
+    st.markdown("### 🧠 Narrativa automática para Dirección")
+    st.info(build_direction_narrative(ctx))
+
+    st.markdown("### 🔥 Focos de acción sugeridos")
+    acciones = build_action_recommendations(ctx)
+    for i, acc in enumerate(acciones, start=1):
+        st.markdown(f"**{i}.** {acc}")
+
+    st.markdown("---")
+    st.markdown("### 🧩 Lectura por bloque")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(card_html_base(
+            "Repuestos",
+            pct_str(ctx["rep_c"]),
+            f"Real {money_str(ctx['rep_real'])} | Obj {money_str(ctx['rep_obj'])}"
+        ), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html_base(
+            "Servicios",
+            pct_str(ctx["srv_c"]),
+            f"Real {money_str(ctx['srv_real'])} | Obj {money_str(ctx['srv_obj'])}"
+        ), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card_html_base(
+            "Volumen / Q",
+            pct_str(ctx["q_c"]),
+            f"Real {qty_str(ctx['q_real'])} | Obj {qty_str(ctx['q_obj'])}"
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Riesgo operativo que puede convertirse en facturación")
+
+    o1, o2, o3 = st.columns(3)
+    with o1:
+        st.markdown(card_html_base(
+            "Órdenes abiertas",
+            qty_str(ctx["op_abiertas"]["count"]),
+            f"Potencial {money_str(ctx['op_abiertas']['monto'])} | Antig. máx {qty_str(ctx['op_abiertas']['age_max'])} días"
+        ), unsafe_allow_html=True)
+    with o2:
+        st.markdown(card_html_base(
+            "Pend. facturación",
+            qty_str(ctx["op_pfact"]["count"]),
+            f"Potencial {money_str(ctx['op_pfact']['monto'])} | Antig. máx {qty_str(ctx['op_pfact']['age_max'])} días"
+        ), unsafe_allow_html=True)
+    with o3:
+        st.markdown(card_html_base(
+            "Presupuestos",
+            qty_str(ctx["op_presup"]["count"]),
+            f"Potencial {money_str(ctx['op_presup']['monto'])} | Antig. máx {qty_str(ctx['op_presup']['age_max'])} días"
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📊 Evolución semanal del cumplimiento económico")
+    total_month_dir = pd.concat([
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS") & (df_month["Categoria_KPI"].isin(rep_sel))],
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS") & (df_month["Categoria_KPI"].isin(srv_sel))]
+    ], ignore_index=True)
+    spark_evolucion(total_month_dir, chart_key="spark_direccion_total")
+
+    st.markdown("---")
+    st.markdown("### 🚦 Matriz Dirección — Sucursal x bloque")
+    render_direction_heatmap(ctx)
+
+    st.markdown("---")
+    with st.expander("🧾 Texto listo para copiar al mail / comité", expanded=False):
+        st.write(build_direction_narrative(ctx))
+        st.write("Acciones sugeridas:")
+        for i, acc in enumerate(acciones, start=1):
+            st.write(f"{i}. {acc}")
+
 # ---------------------------
 # TABS
 # ---------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "🏢 Dirección",
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
     "🧪 Gestión (desvíos)",
@@ -1624,6 +1896,11 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "💬 Presupuestos",
     "🎯 Cierre GAP"
 ])
+# ============================================================
+# TAB 0 — DIRECCIÓN
+# ============================================================
+with tab0:
+    render_direction_tab()
 
 # ============================================================
 # TAB 1 — P&L
