@@ -1809,10 +1809,10 @@ def render_direction_tab():
     else:
         st.info(f"{status['emoji']} {status['label']} — {status['msg']}")
 
-    st.markdown("### 🧠 Narrativa automática para Dirección")
+    st.markdown("### 🧠 Resumen Ejecutivo")
     st.info(build_direction_narrative(ctx))
 
-    st.markdown("### 🔥 Focos de acción sugeridos")
+    st.markdown("### 🔥 Focos de accion")
     acciones = build_action_recommendations(ctx)
     for i, acc in enumerate(acciones, start=1):
         st.markdown(f"**{i}.** {acc}")
