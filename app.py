@@ -1,7 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.26
-# + Nuevo tab: 🎯 Cierre de Mes GAP
+# v2.3.26 — Dirección + Gestión Inteligente
 # + Filtros obligatorios con MULTISELECCIÓN:
 #   - Mes
 #   - Semana corte
@@ -160,21 +159,6 @@ def multiselect_green_tags_css():
     div[data-baseweb="select"] span[data-baseweb="tag"] svg:hover{
         fill: #eaffea !important;
         color: #eaffea !important;
-    }
-
-    /* Tabs en verde (mantiene estética original; evita rojo por default del tema) */
-    button[data-baseweb="tab"]{
-        color: #166534 !important;
-        font-weight: 700 !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"]{
-        color: #16a34a !important;
-    }
-    div[data-baseweb="tab-highlight"]{
-        background-color: #16a34a !important;
-    }
-    div[data-testid="stTabs"] [data-baseweb="tab-list"]{
-        gap: 6px;
     }
     </style>
     """
@@ -1380,14 +1364,42 @@ with hr:
 
 
 
-# ---------------------------
-# TAB NUEVO — CIERRE DE MES GAP
-# ---------------------------
-def render_cierre_mes_gap_tab():
+# ============================================================
+# TAB NUEVO — CIERRE DE MES / GAP A OBJETIVO
+# ============================================================
+def _fmt_by_tipo(valor, tipo_kpi):
+    """Formatea $ como dinero y Q como cantidad, respetando la lógica existente del tablero."""
+    if str(tipo_kpi).strip() == "$":
+        return money_str(valor)
+    return qty_str(valor)
+
+def _estado_gap(cumpl):
+    if pd.isna(cumpl):
+        return "⚪ Sin objetivo"
+    if cumpl >= 1:
+        return "🟢 Cumplido"
+    if cumpl >= 0.90:
+        return "🟡 Cerca"
+    return "🔴 En riesgo"
+
+def _bloque_gap(row):
+    kpi = str(row.get("KPI", "")).upper()
+    cat = str(row.get("Categoria_KPI", "")).upper()
+    if kpi == "REPUESTOS":
+        return "Repuestos"
+    if kpi == "SERVICIOS":
+        return "Servicios"
+    if "CPU" in kpi or "CPU" in cat:
+        return "CPUs"
+    if "NEUM" in kpi or "NEUM" in cat:
+        return "Neumáticos"
+    return str(row.get("KPI", "Otros"))
+
+def render_tab_cierre_gap():
     st.markdown("## 🎯 Cierre de Mes — GAP a Objetivo")
     st.caption(
-        "Pantalla ejecutiva para reunión de cierre: muestra en una sola vista cuánto falta por sucursal "
-        "para Repuestos, Servicios, CPUs y Neumáticos, respetando Mes, Semana corte, Sucursal y variables P&L seleccionadas."
+        "Vista de gestión para la última semana: cuánto falta, por sucursal y por variable, "
+        "respetando mes, semana(s), sucursal(es) y aperturas P&L seleccionadas."
     )
     st.markdown("---")
 
@@ -1396,41 +1408,35 @@ def render_cierre_mes_gap_tab():
         st.info("No hay datos para los filtros seleccionados.")
         return
 
-    rep_opts_gap = sorted(
-        base[(base["Tipo_KPI"] == "$") & (base["KPI"].str.upper() == "REPUESTOS")]["Categoria_KPI"]
-        .dropna().unique().tolist()
-    )
-    srv_opts_gap = sorted(
-        base[(base["Tipo_KPI"] == "$") & (base["KPI"].str.upper() == "SERVICIOS")]["Categoria_KPI"]
-        .dropna().unique().tolist()
-    )
+    rep_options = rep_open.copy()
+    srv_options = srv_open.copy()
 
-    default_rep_gap = [x for x in rep_sel if x in rep_opts_gap] if rep_sel else rep_opts_gap
-    default_srv_gap = [x for x in srv_sel if x in srv_opts_gap] if srv_sel else srv_opts_gap
+    rep_default = [x for x in rep_sel if x in rep_options]
+    srv_default = [x for x in srv_sel if x in srv_options]
 
-    st.markdown("### 🔎 Variables incluidas en el análisis")
-    f1, f2, f3 = st.columns([1.4, 1.4, 1.0])
-
-    with f1:
+    c1, c2 = st.columns(2)
+    with c1:
         rep_gap_sel = st.multiselect(
             "Repuestos: aperturas incluidas",
-            rep_opts_gap,
-            default=default_rep_gap,
-            key="cierre_gap_rep_sel"
+            rep_options,
+            default=rep_default,
+            key="gap_cierre_rep_sel"
         )
-
-    with f2:
+    with c2:
         srv_gap_sel = st.multiselect(
             "Servicios: aperturas incluidas",
-            srv_opts_gap,
-            default=default_srv_gap,
-            key="cierre_gap_srv_sel"
+            srv_options,
+            default=srv_default,
+            key="gap_cierre_srv_sel"
         )
 
-    with f3:
-        incluir_cpus = st.checkbox("Incluir CPUs", value=True, key="cierre_gap_incluir_cpus")
-        incluir_neum = st.checkbox("Incluir Neumáticos", value=True, key="cierre_gap_incluir_neum")
-        modo_cierre = st.checkbox("🔥 Solo pendientes", value=False, key="cierre_gap_modo_cierre")
+    c3, c4, c5 = st.columns([1.0, 1.0, 1.3])
+    with c3:
+        incluir_cpus = st.checkbox("Incluir CPUs", value=True, key="gap_incluir_cpus")
+    with c4:
+        incluir_neum = st.checkbox("Incluir Neumáticos", value=True, key="gap_incluir_neum")
+    with c5:
+        solo_pendientes = st.checkbox("🔥 Modo cierre: ver solo pendientes", value=False, key="gap_solo_pendientes")
 
     partes = []
 
@@ -1440,8 +1446,6 @@ def render_cierre_mes_gap_tab():
         (base["Categoria_KPI"].isin(rep_gap_sel))
     ].copy()
     if not d_rep_gap.empty:
-        d_rep_gap["Bloque_GAP"] = "Repuestos"
-        d_rep_gap["Unidad_GAP"] = "$"
         partes.append(d_rep_gap)
 
     d_srv_gap = base[
@@ -1450,223 +1454,453 @@ def render_cierre_mes_gap_tab():
         (base["Categoria_KPI"].isin(srv_gap_sel))
     ].copy()
     if not d_srv_gap.empty:
-        d_srv_gap["Bloque_GAP"] = "Servicios"
-        d_srv_gap["Unidad_GAP"] = "$"
         partes.append(d_srv_gap)
 
     if incluir_cpus:
-        d_cpu_gap = base[
-            base["KPI"].astype(str).apply(norm_text).str.contains("cpu", na=False)
+        d_cpu = base[
+            base["KPI"].astype(str).str.contains("CPU", case=False, na=False) |
+            base["Categoria_KPI"].astype(str).str.contains("CPU", case=False, na=False)
         ].copy()
-        if not d_cpu_gap.empty:
-            d_cpu_gap["Bloque_GAP"] = "CPUs"
-            d_cpu_gap["Unidad_GAP"] = "Q"
-            partes.append(d_cpu_gap)
+        if not d_cpu.empty:
+            partes.append(d_cpu)
 
     if incluir_neum:
-        d_neum_gap = base[
-            base["KPI"].astype(str).apply(norm_text).str.contains("neum", na=False)
+        d_neum = base[
+            base["KPI"].astype(str).str.contains("NEUM", case=False, na=False) |
+            base["Categoria_KPI"].astype(str).str.contains("NEUM", case=False, na=False)
         ].copy()
-        if not d_neum_gap.empty:
-            d_neum_gap["Bloque_GAP"] = "Neumáticos"
-            d_neum_gap["Unidad_GAP"] = "Q"
-            partes.append(d_neum_gap)
+        if not d_neum.empty:
+            partes.append(d_neum)
 
     if not partes:
         st.warning("No hay datos para las variables seleccionadas.")
         return
 
-    x = pd.concat(partes, ignore_index=True)
-    x = apply_obj0_filter(x, show_obj0)
+    work = pd.concat(partes, ignore_index=True).drop_duplicates()
+    work = apply_obj0_filter(work, show_obj0)
 
-    if x.empty:
-        st.warning("No hay datos luego de aplicar el filtro de Objetivo = 0.")
+    if work.empty:
+        st.warning("No hay datos luego de aplicar el filtro Obj=0.")
         return
 
-    g = (
-        x.groupby(["Sucursal", "Bloque_GAP", "Unidad_GAP"], as_index=False)
-         .agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
+    work["Bloque"] = work.apply(_bloque_gap, axis=1)
+
+    gap = (
+        work.groupby(["Sucursal", "Bloque", "KPI", "Categoria_KPI", "Tipo_KPI"], as_index=False)
+        .agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
     )
-    g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-    g["Gap_Real_Menos_Obj"] = g["Real"] - g["Obj"]
-    g["Falta"] = np.where(g["Gap_Real_Menos_Obj"] < 0, -g["Gap_Real_Menos_Obj"], 0)
-    g["Estado"] = g["Cumpl"].apply(lambda c: "🟢 Cumplido" if pd.notna(c) and c >= 1 else ("🟡 Cerca" if pd.notna(c) and c >= 0.90 else "🔴 En riesgo"))
+    gap["GAP"] = gap["Real"] - gap["Obj"]
+    gap["Falta"] = np.where(gap["GAP"] < 0, gap["GAP"].abs(), 0)
+    gap["Cumpl"] = gap.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    gap["Estado"] = gap["Cumpl"].apply(_estado_gap)
 
-    if modo_cierre:
-        g = g[g["Falta"] > 0].copy()
+    dias_restantes = np.nan
+    if not pd.isna(dias_total_mes) and not pd.isna(dias_transc):
+        dias_restantes = max(float(dias_total_mes) - float(dias_transc), 0)
 
-    if g.empty:
-        st.success("Con los filtros seleccionados no quedan pendientes: todo está cumplido o sin gap negativo.")
+    if not pd.isna(dias_restantes) and dias_restantes > 0:
+        gap["Necesario_Dia"] = np.where(gap["Falta"] > 0, gap["Falta"] / dias_restantes, np.nan)
+    else:
+        gap["Necesario_Dia"] = np.nan
+
+    if solo_pendientes:
+        gap = gap[gap["Falta"] > 0].copy()
+
+    if gap.empty:
+        st.success("Con los filtros seleccionados no hay pendientes: todo está cumplido o sin falta.")
         return
 
-    dinero = g[g["Unidad_GAP"] == "$"].copy()
-    cantidad = g[g["Unidad_GAP"] != "$"].copy()
-
-    real_din = dinero["Real"].sum()
-    obj_din = dinero["Obj"].sum()
-    cump_din = safe_ratio(real_din, obj_din)
-    falta_din = dinero["Falta"].sum()
-
-    real_q = cantidad["Real"].sum()
-    obj_q = cantidad["Obj"].sum()
-    cump_q = safe_ratio(real_q, obj_q)
-    suc_pend = g[g["Falta"] > 0]["Sucursal"].nunique()
+    total_real = gap["Real"].sum()
+    total_obj = gap["Obj"].sum()
+    total_cumpl = safe_ratio(total_real, total_obj)
+    total_gap = total_real - total_obj
+    total_falta = gap["Falta"].sum()
+    suc_pend = gap[gap["Falta"] > 0]["Sucursal"].nunique()
 
     st.markdown("### 📌 Foto ejecutiva del cierre")
-
-    # Lectura separada de volumen Q para evitar mezclar CPUs, neumáticos y otros KPIs de cantidad
-    q_base = x[x["Unidad_GAP"] != "$"].copy()
-    q_cpu = q_base[q_base["KPI"].astype(str).apply(norm_text).str.contains("cpu", na=False)].copy()
-    q_neum = q_base[q_base["KPI"].astype(str).apply(norm_text).str.contains("neum", na=False)].copy()
-    q_otros = q_base[
-        ~q_base["KPI"].astype(str).apply(norm_text).str.contains("cpu", na=False) &
-        ~q_base["KPI"].astype(str).apply(norm_text).str.contains("neum", na=False)
-    ].copy()
-
-    def _q_totales(dq):
-        r = dq["Real_val"].sum() if not dq.empty else 0.0
-        o = dq["Obj_val"].sum() if not dq.empty else 0.0
-        return r, o, safe_ratio(r, o)
-
-    cpu_real, cpu_obj, cpu_c = _q_totales(q_cpu)
-    neum_real, neum_obj, neum_c = _q_totales(q_neum)
-    otros_real, otros_obj, otros_c = _q_totales(q_otros)
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        st.markdown(card_html_base("Cumplimiento $", pct_str(cump_din), f"Real {money_str(real_din)} | Obj {money_str(obj_din)}"), unsafe_allow_html=True)
-    with c2:
-        st.markdown(card_html_base("Falta $", money_str(falta_din), "Gap negativo en Repuestos + Servicios"), unsafe_allow_html=True)
-    with c3:
-        st.markdown(card_html_base("🔧 CPUs", pct_str(cpu_c), f"Real {qty_str(cpu_real)} | Obj {qty_str(cpu_obj)}"), unsafe_allow_html=True)
-    with c4:
-        st.markdown(card_html_base("🛞 Neumáticos", pct_str(neum_c), f"Real {qty_str(neum_real)} | Obj {qty_str(neum_obj)}"), unsafe_allow_html=True)
-    with c5:
-        st.markdown(card_html_base("📦 Otros Q", pct_str(otros_c), f"Real {qty_str(otros_real)} | Obj {qty_str(otros_obj)}"), unsafe_allow_html=True)
-    with c6:
-        st.markdown(card_html_base("Sucursales con pendiente", qty_str(suc_pend), "Sucursales con al menos un gap"), unsafe_allow_html=True)
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.markdown(card_html_base("Cumplimiento total", pct_str(total_cumpl), "Real / Objetivo acumulado"), unsafe_allow_html=True)
+    with k2:
+        st.markdown(card_html_base("GAP total", money_str(total_gap), "Real - Objetivo"), unsafe_allow_html=True)
+    with k3:
+        st.markdown(card_html_base("Falta total", money_str(total_falta), "Solo pendientes negativos"), unsafe_allow_html=True)
+    with k4:
+        st.markdown(card_html_base("Sucursales con pendiente", qty_str(suc_pend), "Con al menos una variable bajo objetivo"), unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 🚦 Matriz de foco — Sucursal x bloque")
+    st.markdown("### 📍 GAP acumulado por sucursal")
 
-    matriz = g.sort_values(["Falta", "Cumpl"], ascending=[False, True]).copy()
-    matriz["Real_fmt"] = matriz.apply(lambda r: money_str(r["Real"]) if r["Unidad_GAP"] == "$" else qty_str(r["Real"]), axis=1)
-    matriz["Obj_fmt"] = matriz.apply(lambda r: money_str(r["Obj"]) if r["Unidad_GAP"] == "$" else qty_str(r["Obj"]), axis=1)
-    matriz["Gap_fmt"] = matriz.apply(lambda r: money_str(r["Gap_Real_Menos_Obj"]) if r["Unidad_GAP"] == "$" else qty_str(r["Gap_Real_Menos_Obj"]), axis=1)
-    matriz["Falta_fmt"] = matriz.apply(lambda r: money_str(r["Falta"]) if r["Unidad_GAP"] == "$" else qty_str(r["Falta"]), axis=1)
-    matriz["Cumpl_fmt"] = matriz["Cumpl"].apply(pct_str)
+    suc = (
+        gap.groupby("Sucursal", as_index=False)
+        .agg(Real=("Real", "sum"), Obj=("Obj", "sum"), Falta=("Falta", "sum"))
+    )
+    suc["GAP"] = suc["Real"] - suc["Obj"]
+    suc["Cumpl"] = suc.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    suc["label"] = suc.apply(lambda r: f"{money_str(r['GAP'])} | {pct_str(r['Cumpl'])}", axis=1)
+    suc = suc.sort_values("GAP", ascending=True)
+
+    fig = px.bar(
+        suc,
+        x="GAP",
+        y="Sucursal",
+        orientation="h",
+        text="label",
+        title="GAP vs objetivo acumulado"
+    )
+    fig.add_vline(x=0, line_width=2, line_dash="dash")
+    fig.update_layout(height=420, margin=dict(l=10, r=10, t=45, b=10), xaxis_title="GAP (Real - Objetivo)")
+    fig.update_traces(textposition="inside")
+    st.plotly_chart(fig, use_container_width=True, key="gap_cierre_sucursal")
+
+    st.markdown("### 🚦 Matriz de foco — Sucursal x variable")
+
+    tabla = gap.copy().sort_values(["Falta", "Cumpl"], ascending=[False, True])
+    tabla["Variable"] = np.where(
+        tabla["KPI"].str.upper().isin(["REPUESTOS", "SERVICIOS"]),
+        tabla["Categoria_KPI"],
+        tabla["KPI"]
+    )
+
+    tabla_show = tabla[[
+        "Sucursal", "Bloque", "Variable", "Tipo_KPI", "Real", "Obj", "Cumpl", "GAP", "Falta", "Necesario_Dia", "Estado"
+    ]].copy()
+
+    tabla_show["Real"] = tabla_show.apply(lambda r: _fmt_by_tipo(r["Real"], r["Tipo_KPI"]), axis=1)
+    tabla_show["Objetivo"] = tabla.apply(lambda r: _fmt_by_tipo(r["Obj"], r["Tipo_KPI"]), axis=1)
+    tabla_show["Cumplimiento"] = tabla_show["Cumpl"].apply(pct_str)
+    tabla_show["GAP"] = tabla.apply(lambda r: _fmt_by_tipo(r["GAP"], r["Tipo_KPI"]), axis=1)
+    tabla_show["Falta"] = tabla.apply(lambda r: _fmt_by_tipo(r["Falta"], r["Tipo_KPI"]), axis=1)
+    tabla_show["Necesario por día"] = tabla.apply(lambda r: _fmt_by_tipo(r["Necesario_Dia"], r["Tipo_KPI"]) if pd.notna(r["Necesario_Dia"]) else "—", axis=1)
+
+    tabla_show = tabla_show[[
+        "Sucursal", "Bloque", "Variable", "Real", "Objetivo", "Cumplimiento", "GAP", "Falta", "Necesario por día", "Estado"
+    ]]
+
+    st.dataframe(tabla_show, use_container_width=True, hide_index=True)
+
+    st.markdown("### ⚔️ Prioridad de acción")
+    pendientes = tabla[tabla["Falta"] > 0].copy().sort_values("Falta", ascending=False).head(15)
+
+    if pendientes.empty:
+        st.success("No hay pendientes para recuperar con los filtros seleccionados.")
+    else:
+        pendientes["Variable"] = np.where(
+            pendientes["KPI"].str.upper().isin(["REPUESTOS", "SERVICIOS"]),
+            pendientes["Categoria_KPI"],
+            pendientes["KPI"]
+        )
+        pendientes["Eje"] = pendientes["Sucursal"].astype(str) + " — " + pendientes["Variable"].astype(str)
+        pendientes["label"] = pendientes.apply(lambda r: _fmt_by_tipo(r["Falta"], r["Tipo_KPI"]), axis=1)
+
+        fig2 = px.bar(
+            pendientes.sort_values("Falta", ascending=True),
+            x="Falta",
+            y="Eje",
+            orientation="h",
+            text="label",
+            title="Top pendientes a recuperar"
+        )
+        fig2.update_layout(height=520, margin=dict(l=10, r=10, t=45, b=10), xaxis_title="Falta para cumplir")
+        fig2.update_traces(textposition="inside")
+        st.plotly_chart(fig2, use_container_width=True, key="gap_cierre_prioridad")
+
+        st.info(
+            "Lectura sugerida para la reunión: empezar por los mayores pendientes absolutos, "
+            "validar si todavía son recuperables esta semana y asignar responsable por sucursal/variable."
+        )
+
+
+
+# ============================================================
+# NUEVO NIVEL — DIRECCIÓN + GESTIÓN INTELIGENTE
+# ============================================================
+def _status_from_cumpl(cumpl):
+    if pd.isna(cumpl):
+        return {
+            "emoji": "⚪",
+            "label": "Sin lectura",
+            "msg": "No hay objetivo suficiente para calcular cumplimiento.",
+            "color": "gray"
+        }
+    if cumpl >= 1:
+        return {
+            "emoji": "🟢",
+            "label": "En objetivo",
+            "msg": "Postventa está cumpliendo o superando el objetivo acumulado.",
+            "color": "green"
+        }
+    if cumpl >= 0.90:
+        return {
+            "emoji": "🟡",
+            "label": "Cerca del objetivo",
+            "msg": "Postventa está cerca del objetivo, pero requiere seguimiento de desvíos.",
+            "color": "yellow"
+        }
+    return {
+        "emoji": "🔴",
+        "label": "En riesgo",
+        "msg": "Postventa presenta un desvío relevante frente al objetivo acumulado.",
+        "color": "red"
+    }
+
+def _fmt_gap(valor, tipo_kpi):
+    if str(tipo_kpi).strip() == "$":
+        return money_str(valor)
+    return qty_str(valor)
+
+def _metric_delta_pts(cumpl):
+    if pd.isna(cumpl):
+        return None
+    return f"{(float(cumpl) - 1) * 100:.1f} pts vs objetivo"
+
+def build_direction_context():
+    d_pl = df_cut[df_cut["Tipo_KPI"] == "$"].copy()
+
+    d_rep = d_pl[d_pl["KPI"].str.upper() == "REPUESTOS"].copy()
+    d_rep = d_rep[d_rep["Categoria_KPI"].isin(rep_sel)].copy()
+
+    d_srv = d_pl[d_pl["KPI"].str.upper() == "SERVICIOS"].copy()
+    d_srv = d_srv[d_srv["Categoria_KPI"].isin(srv_sel)].copy()
+
+    rep_real, rep_obj, rep_c = summarize_segment(d_rep)
+    srv_real, srv_obj, srv_c = summarize_segment(d_srv)
+
+    total_real = rep_real + srv_real
+    total_obj = rep_obj + srv_obj
+    total_c = safe_ratio(total_real, total_obj)
+    total_proy = proyectar_eom_runrate(total_real, dias_transc, dias_total_mes)
+
+    gap_total = total_real - total_obj
+    falta_total = max(total_obj - total_real, 0)
+
+    d_q = apply_obj0_filter(df_cut[df_cut["Tipo_KPI"] != "$"].copy(), show_obj0)
+    q_real = d_q["Real_val"].sum() if not d_q.empty else np.nan
+    q_obj = d_q["Obj_val"].sum() if not d_q.empty else np.nan
+    q_c = safe_ratio(q_real, q_obj) if not d_q.empty else np.nan
+
+    driver = principal_driver_gap(pd.concat([d_rep, d_srv], ignore_index=True))
+
+    op_ab = op_summary(abiertas_std) if "abiertas_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+    op_pf = op_summary(pfact_std) if "pfact_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+    op_pr = op_summary(presup_std) if "presup_std" in globals() else {"count": 0, "monto": np.nan, "age_avg": np.nan, "age_max": np.nan}
+
+    return {
+        "rep_real": rep_real, "rep_obj": rep_obj, "rep_c": rep_c,
+        "srv_real": srv_real, "srv_obj": srv_obj, "srv_c": srv_c,
+        "total_real": total_real, "total_obj": total_obj, "total_c": total_c,
+        "total_proy": total_proy, "gap_total": gap_total, "falta_total": falta_total,
+        "q_real": q_real, "q_obj": q_obj, "q_c": q_c,
+        "driver": driver,
+        "d_rep": d_rep, "d_srv": d_srv,
+        "op_abiertas": op_ab, "op_pfact": op_pf, "op_presup": op_pr
+    }
+
+def build_direction_narrative(ctx):
+    status = _status_from_cumpl(ctx["total_c"])
+    partes = [f"{status['emoji']} {status['msg']}"]
+
+    if pd.notna(ctx["total_c"]):
+        partes.append(f"Cumplimiento acumulado: {pct_str(ctx['total_c'])}.")
+
+    if ctx["falta_total"] > 0:
+        partes.append(f"Falta recuperar {money_str(ctx['falta_total'])} para llegar al objetivo del corte.")
+
+    if pd.notna(ctx["total_proy"]) and pd.notna(ctx["total_obj"]) and ctx["total_obj"] > 0:
+        proy_c = safe_ratio(ctx["total_proy"], ctx["total_obj"])
+        if pd.notna(proy_c):
+            if proy_c >= 1:
+                partes.append(f"Con el ritmo actual, la proyección de cierre queda en {pct_str(proy_c)} del objetivo.")
+            else:
+                partes.append(f"Con el ritmo actual, la proyección de cierre quedaría en {pct_str(proy_c)} del objetivo.")
+
+    if ctx["driver"]:
+        partes.append(f"El principal foco económico es {ctx['driver']['KPI']} / {ctx['driver']['Cat']} con gap de {money_str(ctx['driver']['Gap'])}.")
+
+    if pd.notna(ctx["q_c"]) and ctx["q_c"] < 1:
+        partes.append(f"Los KPIs de volumen/cantidad están al {pct_str(ctx['q_c'])}; revisar tráfico, conversión y productividad.")
+
+    return " ".join(partes)
+
+def build_action_recommendations(ctx):
+    acciones = []
+
+    if pd.notna(ctx["total_c"]) and ctx["total_c"] < 0.90:
+        acciones.append("Priorizar recuperación del gap económico por sucursal y apertura antes de profundizar análisis secundarios.")
+    elif pd.notna(ctx["total_c"]) and ctx["total_c"] < 1:
+        acciones.append("Mantener control diario del avance, porque el desvío todavía parece recuperable.")
+    else:
+        acciones.append("Sostener ritmo y proteger margen; evitar que el cumplimiento se explique solo por precio o mix.")
+
+    if ctx["driver"]:
+        acciones.append(f"Asignar responsable específico para {ctx['driver']['KPI']} / {ctx['driver']['Cat']} y revisar plan de cierre.")
+
+    if ctx["op_pfact"]["monto"] is not None and pd.notna(ctx["op_pfact"]["monto"]) and ctx["op_pfact"]["monto"] > 0:
+        acciones.append(f"Atacar pendientes de facturación: hay {money_str(ctx['op_pfact']['monto'])} de potencial administrativo.")
+
+    if ctx["op_abiertas"]["count"] > 0:
+        acciones.append(f"Revisar órdenes abiertas: {qty_str(ctx['op_abiertas']['count'])} casos activos pueden convertirse en facturación o demora operativa.")
+
+    if ctx["op_presup"]["count"] > 0:
+        acciones.append(f"Activar seguimiento comercial de presupuestos: {qty_str(ctx['op_presup']['count'])} oportunidades pendientes.")
+
+    return acciones[:5]
+
+def render_direction_heatmap(ctx):
+    base = pd.concat([ctx["d_rep"], ctx["d_srv"]], ignore_index=True)
+    base = apply_obj0_filter(base, show_obj0)
+
+    if base.empty:
+        st.info("No hay datos económicos para construir la matriz Dirección.")
+        return
+
+    g = base.groupby(["Sucursal", "KPI"], as_index=False).agg(
+        Real=("Real_val", "sum"),
+        Obj=("Obj_val", "sum")
+    )
+    g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    g["GAP"] = g["Real"] - g["Obj"]
+    g = g[~g["Cumpl"].isna()].copy()
+
+    if g.empty:
+        st.info("No hay cumplimiento calculable para la matriz.")
+        return
+
+    g["Estado"] = g["Cumpl"].apply(lambda x: _status_from_cumpl(x)["label"])
+    g_show = g.sort_values(["Cumpl", "GAP"], ascending=[True, True]).copy()
+    g_show["Cumplimiento"] = g_show["Cumpl"].apply(pct_str)
+    g_show["Real"] = g_show["Real"].apply(money_str)
+    g_show["Objetivo"] = g_show["Obj"].apply(money_str)
+    g_show["GAP"] = g_show["GAP"].apply(money_str)
 
     st.dataframe(
-        matriz[["Sucursal", "Bloque_GAP", "Real_fmt", "Obj_fmt", "Cumpl_fmt", "Gap_fmt", "Falta_fmt", "Estado"]]
-        .rename(columns={
-            "Bloque_GAP": "Bloque",
-            "Real_fmt": "Real",
-            "Obj_fmt": "Objetivo",
-            "Cumpl_fmt": "Cumplimiento",
-            "Gap_fmt": "GAP Real-Obj",
-            "Falta_fmt": "Falta para cumplir",
-        }),
+        g_show[["Sucursal", "KPI", "Real", "Objetivo", "Cumplimiento", "GAP", "Estado"]],
         use_container_width=True,
         hide_index=True
     )
 
-    st.markdown("### 📍 GAP por sucursal")
-
-    g_suc_din = (
-        dinero.groupby("Sucursal", as_index=False)
-        .agg(Real=("Real", "sum"), Obj=("Obj", "sum"), Falta=("Falta", "sum"))
+def render_direction_tab():
+    st.markdown("## 🏢 Dirección — Resumen Ejecutivo")
+    st.caption(
+        "Vista de lectura rápida: resultado, proyección, causa principal y focos de acción. "
+        "Respeta los filtros de mes, semana, sucursal y aperturas P&L."
     )
-    g_suc_din["Gap"] = g_suc_din["Real"] - g_suc_din["Obj"]
-    g_suc_din["label"] = g_suc_din["Gap"].apply(money_str)
-
-    g_suc_q = (
-        cantidad.groupby("Sucursal", as_index=False)
-        .agg(Real=("Real", "sum"), Obj=("Obj", "sum"), Falta=("Falta", "sum"))
-    )
-    g_suc_q["Gap"] = g_suc_q["Real"] - g_suc_q["Obj"]
-    g_suc_q["label"] = g_suc_q["Gap"].apply(qty_str)
-
-    cg1, cg2 = st.columns(2)
-    with cg1:
-        st.markdown("**GAP $ — Repuestos + Servicios**")
-        if g_suc_din.empty:
-            st.info("Sin datos monetarios.")
-        else:
-            fig = px.bar(g_suc_din.sort_values("Gap"), x="Gap", y="Sucursal", orientation="h", text="label")
-            fig.add_vline(x=0, line_dash="dash", line_width=2)
-            fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="GAP Real - Objetivo")
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True, key="cierre_gap_sucursal_dinero")
-
-    with cg2:
-        st.markdown("**GAP Q — CPUs + Neumáticos**")
-        if g_suc_q.empty:
-            st.info("Sin datos de cantidad.")
-        else:
-            fig = px.bar(g_suc_q.sort_values("Gap"), x="Gap", y="Sucursal", orientation="h", text="label")
-            fig.add_vline(x=0, line_dash="dash", line_width=2)
-            fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="GAP Real - Objetivo")
-            fig.update_traces(textposition="inside")
-            st.plotly_chart(fig, use_container_width=True, key="cierre_gap_sucursal_q")
-
     st.markdown("---")
-    st.markdown("### ⚔️ Prioridad de acción — qué atacar esta semana")
 
-    detalle = (
-        x.groupby(["Sucursal", "Bloque_GAP", "KPI", "Categoria_KPI", "Tipo_KPI"], as_index=False)
-         .agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
-    )
-    detalle["Cumpl"] = detalle.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-    detalle["Gap_Real_Menos_Obj"] = detalle["Real"] - detalle["Obj"]
-    detalle["Falta"] = np.where(detalle["Gap_Real_Menos_Obj"] < 0, -detalle["Gap_Real_Menos_Obj"], 0)
-    detalle = detalle[detalle["Falta"] > 0].copy()
+    ctx = build_direction_context()
+    status = _status_from_cumpl(ctx["total_c"])
 
-    if detalle.empty:
-        st.success("No hay pendientes abiertos por KPI/apertura para los filtros seleccionados.")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric("Facturación acumulada", money_str(ctx["total_real"]), delta=_metric_delta_pts(ctx["total_c"]))
+    with k2:
+        st.metric("Objetivo acumulado", money_str(ctx["total_obj"]))
+    with k3:
+        st.metric("Cumplimiento", pct_str(ctx["total_c"]), delta=_metric_delta_pts(ctx["total_c"]))
+    with k4:
+        st.metric("Proyección cierre", money_str(ctx["total_proy"]))
+
+    if status["color"] == "green":
+        st.success(f"{status['emoji']} {status['label']} — {status['msg']}")
+    elif status["color"] == "yellow":
+        st.warning(f"{status['emoji']} {status['label']} — {status['msg']}")
+    elif status["color"] == "red":
+        st.error(f"{status['emoji']} {status['label']} — {status['msg']}")
     else:
-        detalle["Accion"] = detalle["Sucursal"].astype(str) + " — " + detalle["Bloque_GAP"].astype(str) + " — " + detalle["Categoria_KPI"].astype(str)
-        top_det = detalle.sort_values("Falta", ascending=False).head(15).copy()
-        top_det["Falta_fmt"] = top_det.apply(lambda r: money_str(r["Falta"]) if r["Tipo_KPI"] == "$" else qty_str(r["Falta"]), axis=1)
-        top_det["label"] = top_det.apply(lambda r: f"{r['Falta_fmt']} | {pct_str(r['Cumpl'])}", axis=1)
+        st.info(f"{status['emoji']} {status['label']} — {status['msg']}")
 
-        fig = px.bar(top_det.sort_values("Falta"), x="Falta", y="Accion", orientation="h", text="label", title="Top 15 gaps pendientes")
-        fig.update_layout(height=520, margin=dict(l=10, r=10, t=45, b=10), xaxis_title="Falta para cumplir")
-        fig.update_traces(textposition="inside")
-        st.plotly_chart(fig, use_container_width=True, key="cierre_gap_top_accion")
+    st.markdown("### 🧠 Resumen Ejecutivo")
+    st.info(build_direction_narrative(ctx))
 
-        det_show = detalle.sort_values("Falta", ascending=False).copy()
-        det_show["Real"] = det_show.apply(lambda r: money_str(r["Real"]) if r["Tipo_KPI"] == "$" else qty_str(r["Real"]), axis=1)
-        det_show["Obj"] = det_show.apply(lambda r: money_str(r["Obj"]) if r["Tipo_KPI"] == "$" else qty_str(r["Obj"]), axis=1)
-        det_show["Falta"] = det_show.apply(lambda r: money_str(r["Falta"]) if r["Tipo_KPI"] == "$" else qty_str(r["Falta"]), axis=1)
-        det_show["Cumpl"] = det_show["Cumpl"].apply(pct_str)
-
-        with st.expander("🔎 Detalle completo de pendientes", expanded=False):
-            st.dataframe(
-                det_show[["Sucursal", "Bloque_GAP", "KPI", "Categoria_KPI", "Real", "Obj", "Cumpl", "Falta"]]
-                .rename(columns={"Bloque_GAP": "Bloque", "Categoria_KPI": "Apertura / Categoría", "Obj": "Objetivo", "Cumpl": "Cumplimiento"}),
-                use_container_width=True,
-                hide_index=True
-            )
+    st.markdown("### 🔥 Focos de accion")
+    acciones = build_action_recommendations(ctx)
+    for i, acc in enumerate(acciones, start=1):
+        st.markdown(f"**{i}.** {acc}")
 
     st.markdown("---")
-    st.info(
-        "Lectura recomendada para la reunión: empezar por los gaps de mayor impacto, asignar responsable por sucursal "
-        "y definir acciones concretas para recuperar lo que todavía mueve el cierre del mes."
-    )
+    st.markdown("### 🧩 Lectura por bloque")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(card_html_base(
+            "Repuestos",
+            pct_str(ctx["rep_c"]),
+            f"Real {money_str(ctx['rep_real'])} | Obj {money_str(ctx['rep_obj'])}"
+        ), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html_base(
+            "Servicios",
+            pct_str(ctx["srv_c"]),
+            f"Real {money_str(ctx['srv_real'])} | Obj {money_str(ctx['srv_obj'])}"
+        ), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card_html_base(
+            "Volumen / Q",
+            pct_str(ctx["q_c"]),
+            f"Real {qty_str(ctx['q_real'])} | Obj {qty_str(ctx['q_obj'])}"
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Riesgo operativo que puede convertirse en facturación")
+
+    o1, o2, o3 = st.columns(3)
+    with o1:
+        st.markdown(card_html_base(
+            "Órdenes abiertas",
+            qty_str(ctx["op_abiertas"]["count"]),
+            f"Potencial {money_str(ctx['op_abiertas']['monto'])} | Antig. máx {qty_str(ctx['op_abiertas']['age_max'])} días"
+        ), unsafe_allow_html=True)
+    with o2:
+        st.markdown(card_html_base(
+            "Pend. facturación",
+            qty_str(ctx["op_pfact"]["count"]),
+            f"Potencial {money_str(ctx['op_pfact']['monto'])} | Antig. máx {qty_str(ctx['op_pfact']['age_max'])} días"
+        ), unsafe_allow_html=True)
+    with o3:
+        st.markdown(card_html_base(
+            "Presupuestos",
+            qty_str(ctx["op_presup"]["count"]),
+            f"Potencial {money_str(ctx['op_presup']['monto'])} | Antig. máx {qty_str(ctx['op_presup']['age_max'])} días"
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📊 Evolución semanal del cumplimiento económico")
+    total_month_dir = pd.concat([
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS") & (df_month["Categoria_KPI"].isin(rep_sel))],
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS") & (df_month["Categoria_KPI"].isin(srv_sel))]
+    ], ignore_index=True)
+    spark_evolucion(total_month_dir, chart_key="spark_direccion_total")
+
+    st.markdown("---")
+    st.markdown("### 🚦 Matriz Dirección — Sucursal x bloque")
+    render_direction_heatmap(ctx)
+
+    st.markdown("---")
+    with st.expander("🧾 Texto listo para copiar al mail / comité", expanded=False):
+        st.write(build_direction_narrative(ctx))
+        st.write("Acciones sugeridas:")
+        for i, acc in enumerate(acciones, start=1):
+            st.write(f"{i}. {acc}")
 
 # ---------------------------
 # TABS
 # ---------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "🏢 Dirección",
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
-    "🎯 Cierre de Mes GAP",
     "🧪 Gestión (desvíos)",
     "🗓️ Hitos del mes",
     "🔧 Órdenes Abiertas",
     "🧾 Pend. Facturación",
-    "💬 Presupuestos"
+    "💬 Presupuestos",
+    "🎯 Cierre GAP"
 ])
+# ============================================================
+# TAB 0 — DIRECCIÓN
+# ============================================================
+with tab0:
+    render_direction_tab()
 
 # ============================================================
 # TAB 1 — P&L
@@ -1918,15 +2152,9 @@ with tab2:
             st.dataframe(detail, use_container_width=True, hide_index=True)
 
 # ============================================================
-# TAB 3 — CIERRE DE MES GAP
+# TAB 3 — Gestión
 # ============================================================
 with tab3:
-    render_cierre_mes_gap_tab()
-
-# ============================================================
-# TAB 4 — Gestión
-# ============================================================
-with tab4:
     st.markdown("## 🧪 Gestión (desvíos)")
     st.markdown("---")
 
@@ -1971,9 +2199,9 @@ with tab4:
             st.dataframe(g, use_container_width=True, hide_index=True)
 
 # ============================================================
-# TAB 5 — Hitos del mes
+# TAB 4 — Hitos del mes
 # ============================================================
-with tab5:
+with tab4:
     st.markdown("## 🗓️ Hitos del mes — Resumen del mes")
     st.caption(f"Mes(es) seleccionados: **{labels_from_mes_keys(meses_sel)}**")
     st.markdown("---")
@@ -1994,9 +2222,9 @@ with tab5:
         st.dataframe(hitos_mes, use_container_width=True, hide_index=True)
 
 # ============================================================
-# TAB 6 — ÓRDENES ABIERTAS
+# TAB 5 — ÓRDENES ABIERTAS
 # ============================================================
-with tab6:
+with tab5:
     abiertas_std = build_operational_standard(df_abiertas_raw, "Abiertas")
     render_operational_tab(
         abiertas_std,
@@ -2007,9 +2235,9 @@ with tab6:
     )
 
 # ============================================================
-# TAB 7 — PENDIENTES FACTURACIÓN
+# TAB 6 — PENDIENTES FACTURACIÓN
 # ============================================================
-with tab7:
+with tab6:
     pfact_std = build_operational_standard(df_pfact_raw, "Pendientes Fact")
     render_operational_tab(
         pfact_std,
@@ -2020,9 +2248,9 @@ with tab7:
     )
 
 # ============================================================
-# TAB 8 — PRESUPUESTOS
+# TAB 7 — PRESUPUESTOS
 # ============================================================
-with tab8:
+with tab7:
     presup_std = build_operational_standard(df_presup_raw, "Presupuestos")
 
     if presup_std is None or presup_std.empty:
@@ -2045,3 +2273,9 @@ with tab8:
             key_prefix="presup",
             enable_asesor_filter=False
         )
+
+# ============================================================
+# TAB 8 — CIERRE GAP
+# ============================================================
+with tab8:
+    render_tab_cierre_gap()
