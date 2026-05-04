@@ -1834,11 +1834,51 @@ def render_direction_tab():
             f"Real {money_str(ctx['srv_real'])} | Obj {money_str(ctx['srv_obj'])}"
         ), unsafe_allow_html=True)
     with c3:
-        st.markdown(card_html_base(
-            "Volumen / Q",
-            pct_str(ctx["q_c"]),
-            f"Real {qty_str(ctx['q_real'])} | Obj {qty_str(ctx['q_obj'])}"
-        ), unsafe_allow_html=True)
+# ============================================================
+# 🔹 NUEVA LECTURA VOLUMEN (Q)
+# ============================================================
+
+df_q = df_cut[df_cut["Objetivo_Q"] > 0].copy()
+
+df_cpu = df_q[df_q["KPI"].str.contains("CPU", case=False, na=False)]
+df_neum = df_q[df_q["KPI"].str.contains("NEUM", case=False, na=False)]
+df_otros = df_q[
+    ~df_q["KPI"].str.contains("CPU", case=False, na=False) &
+    ~df_q["KPI"].str.contains("NEUM", case=False, na=False)
+]
+
+def calc_kpi(df):
+    real = df["Real_Q"].sum()
+    obj = df["Objetivo_Q"].sum()
+    cump = safe_ratio(real, obj)
+    return real, obj, cump
+
+cpu_real, cpu_obj, cpu_cump = calc_kpi(df_cpu)
+neum_real, neum_obj, neum_cump = calc_kpi(df_neum)
+otros_real, otros_obj, otros_cump = calc_kpi(df_otros)
+
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    st.markdown(card_html_base(
+        "🔧 CPUs",
+        pct_str(cpu_cump),
+        f"Real {qty_str(cpu_real)} | Obj {qty_str(cpu_obj)}"
+    ), unsafe_allow_html=True)
+
+with c2:
+    st.markdown(card_html_base(
+        "🛞 Neumáticos",
+        pct_str(neum_cump),
+        f"Real {qty_str(neum_real)} | Obj {qty_str(neum_obj)}"
+    ), unsafe_allow_html=True)
+
+with c3:
+    st.markdown(card_html_base(
+        "📦 Otros",
+        pct_str(otros_cump),
+        f"Real {qty_str(otros_real)} | Obj {qty_str(otros_obj)}"
+    ), unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### ⚙️ Riesgo operativo que puede convertirse en facturación")
