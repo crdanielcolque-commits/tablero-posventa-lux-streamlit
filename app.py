@@ -1820,7 +1820,7 @@ def render_direction_tab():
     st.markdown("---")
     st.markdown("### 🧩 Lectura por bloque")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         st.markdown(card_html_base(
             "Repuestos",
@@ -1833,11 +1833,58 @@ def render_direction_tab():
             pct_str(ctx["srv_c"]),
             f"Real {money_str(ctx['srv_real'])} | Obj {money_str(ctx['srv_obj'])}"
         ), unsafe_allow_html=True)
-    with c3:
+
+    st.markdown("#### 🔍 Volumen / Q separado")
+
+    d_q_dir = df_cut[df_cut["Tipo_KPI"].astype(str).str.upper() != "$"].copy()
+    d_q_dir = apply_obj0_filter(d_q_dir, show_obj0)
+
+    d_cpu_dir = d_q_dir[
+        d_q_dir["KPI"].astype(str).str.contains("CPU", case=False, na=False) |
+        d_q_dir["Categoria_KPI"].astype(str).str.contains("CPU", case=False, na=False)
+    ].copy()
+
+    d_neum_dir = d_q_dir[
+        d_q_dir["KPI"].astype(str).str.contains("NEUM", case=False, na=False) |
+        d_q_dir["Categoria_KPI"].astype(str).str.contains("NEUM", case=False, na=False)
+    ].copy()
+
+    d_otros_q_dir = d_q_dir[
+        ~(
+            d_q_dir["KPI"].astype(str).str.contains("CPU", case=False, na=False) |
+            d_q_dir["Categoria_KPI"].astype(str).str.contains("CPU", case=False, na=False) |
+            d_q_dir["KPI"].astype(str).str.contains("NEUM", case=False, na=False) |
+            d_q_dir["Categoria_KPI"].astype(str).str.contains("NEUM", case=False, na=False)
+        )
+    ].copy()
+
+    def _calc_q_card(dq):
+        real = dq["Real_Q"].sum() if "Real_Q" in dq.columns else dq["Real_val"].sum()
+        obj = dq["Objetivo_Q"].sum() if "Objetivo_Q" in dq.columns else dq["Obj_val"].sum()
+        return real, obj, safe_ratio(real, obj)
+
+    cpu_real, cpu_obj, cpu_c = _calc_q_card(d_cpu_dir)
+    neum_real, neum_obj, neum_c = _calc_q_card(d_neum_dir)
+    otros_q_real, otros_q_obj, otros_q_c = _calc_q_card(d_otros_q_dir)
+
+    q1, q2, q3 = st.columns(3)
+    with q1:
         st.markdown(card_html_base(
-            "Volumen / Q",
-            pct_str(ctx["q_c"]),
-            f"Real {qty_str(ctx['q_real'])} | Obj {qty_str(ctx['q_obj'])}"
+            "🔧 CPUs",
+            pct_str(cpu_c),
+            f"Real {qty_str(cpu_real)} | Obj {qty_str(cpu_obj)}"
+        ), unsafe_allow_html=True)
+    with q2:
+        st.markdown(card_html_base(
+            "🛞 Neumáticos",
+            pct_str(neum_c),
+            f"Real {qty_str(neum_real)} | Obj {qty_str(neum_obj)}"
+        ), unsafe_allow_html=True)
+    with q3:
+        st.markdown(card_html_base(
+            "📦 Otros Q",
+            pct_str(otros_q_c),
+            f"Real {qty_str(otros_q_real)} | Obj {qty_str(otros_q_obj)}"
         ), unsafe_allow_html=True)
 
     st.markdown("---")
