@@ -1,6 +1,6 @@
 # ============================================================
 # TABLERO POSVENTA — MACRO → MICRO (Semanal + Acumulado)
-# v2.3.26 — Dirección + Gestión Inteligente
+# v2.3.27 — Dirección + Resumen Ejecutivo Mes + GAP + Q separado
 # + Filtros obligatorios con MULTISELECCIÓN:
 #   - Mes
 #   - Semana corte
@@ -1654,6 +1654,42 @@ def _metric_delta_pts(cumpl):
         return None
     return f"{(float(cumpl) - 1) * 100:.1f} pts vs objetivo"
 
+
+def build_q_split_summary(dbase: pd.DataFrame) -> dict:
+    """Separa KPIs de cantidad (Q) en CPUs, Neumáticos y Otros Q."""
+    out = {
+        "CPUs": {"real": np.nan, "obj": np.nan, "cumpl": np.nan},
+        "Neumáticos": {"real": np.nan, "obj": np.nan, "cumpl": np.nan},
+        "Otros Q": {"real": np.nan, "obj": np.nan, "cumpl": np.nan},
+    }
+    if dbase is None or dbase.empty:
+        return out
+
+    q = dbase[dbase["Tipo_KPI"].astype(str).str.strip() != "$"].copy()
+    q = apply_obj0_filter(q, show_obj0)
+    if q.empty:
+        return out
+
+    k = q["KPI"].astype(str)
+    c = q["Categoria_KPI"].astype(str)
+
+    masks = {
+        "CPUs": k.str.contains("CPU", case=False, na=False) | c.str.contains("CPU", case=False, na=False),
+        "Neumáticos": k.str.contains("NEUM", case=False, na=False) | c.str.contains("NEUM", case=False, na=False),
+    }
+    masks["Otros Q"] = ~(masks["CPUs"] | masks["Neumáticos"])
+
+    for nombre, mask in masks.items():
+        d = q[mask].copy()
+        if d.empty:
+            real = 0.0
+            obj = 0.0
+        else:
+            real = float(d["Real_val"].sum())
+            obj = float(d["Obj_val"].sum())
+        out[nombre] = {"real": real, "obj": obj, "cumpl": safe_ratio(real, obj)}
+    return out
+
 def build_direction_context():
     d_pl = df_cut[df_cut["Tipo_KPI"] == "$"].copy()
 
@@ -1820,7 +1856,12 @@ def render_direction_tab():
     st.markdown("---")
     st.markdown("### 🧩 Lectura por bloque")
 
-    c1, c2 = st.columns(2)
+    q_split = build_q_split_summary(df_cut)
+    cpu = q_split.get("CPUs", {"real": np.nan, "obj": np.nan, "cumpl": np.nan})
+    neum = q_split.get("Neumáticos", {"real": np.nan, "obj": np.nan, "cumpl": np.nan})
+    otros_q = q_split.get("Otros Q", {"real": np.nan, "obj": np.nan, "cumpl": np.nan})
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(card_html_base(
             "Repuestos",
@@ -1833,58 +1874,23 @@ def render_direction_tab():
             pct_str(ctx["srv_c"]),
             f"Real {money_str(ctx['srv_real'])} | Obj {money_str(ctx['srv_obj'])}"
         ), unsafe_allow_html=True)
-
-    st.markdown("#### 🔍 Volumen / Q separado")
-
-    d_q_dir = df_cut[df_cut["Tipo_KPI"].astype(str).str.upper() != "$"].copy()
-    d_q_dir = apply_obj0_filter(d_q_dir, show_obj0)
-
-    d_cpu_dir = d_q_dir[
-        d_q_dir["KPI"].astype(str).str.contains("CPU", case=False, na=False) |
-        d_q_dir["Categoria_KPI"].astype(str).str.contains("CPU", case=False, na=False)
-    ].copy()
-
-    d_neum_dir = d_q_dir[
-        d_q_dir["KPI"].astype(str).str.contains("NEUM", case=False, na=False) |
-        d_q_dir["Categoria_KPI"].astype(str).str.contains("NEUM", case=False, na=False)
-    ].copy()
-
-    d_otros_q_dir = d_q_dir[
-        ~(
-            d_q_dir["KPI"].astype(str).str.contains("CPU", case=False, na=False) |
-            d_q_dir["Categoria_KPI"].astype(str).str.contains("CPU", case=False, na=False) |
-            d_q_dir["KPI"].astype(str).str.contains("NEUM", case=False, na=False) |
-            d_q_dir["Categoria_KPI"].astype(str).str.contains("NEUM", case=False, na=False)
-        )
-    ].copy()
-
-    def _calc_q_card(dq):
-        real = dq["Real_Q"].sum() if "Real_Q" in dq.columns else dq["Real_val"].sum()
-        obj = dq["Objetivo_Q"].sum() if "Objetivo_Q" in dq.columns else dq["Obj_val"].sum()
-        return real, obj, safe_ratio(real, obj)
-
-    cpu_real, cpu_obj, cpu_c = _calc_q_card(d_cpu_dir)
-    neum_real, neum_obj, neum_c = _calc_q_card(d_neum_dir)
-    otros_q_real, otros_q_obj, otros_q_c = _calc_q_card(d_otros_q_dir)
-
-    q1, q2, q3 = st.columns(3)
-    with q1:
+    with c3:
         st.markdown(card_html_base(
             "🔧 CPUs",
-            pct_str(cpu_c),
-            f"Real {qty_str(cpu_real)} | Obj {qty_str(cpu_obj)}"
+            pct_str(cpu["cumpl"]),
+            f"Real {qty_str(cpu['real'])} | Obj {qty_str(cpu['obj'])}"
         ), unsafe_allow_html=True)
-    with q2:
+    with c4:
         st.markdown(card_html_base(
             "🛞 Neumáticos",
-            pct_str(neum_c),
-            f"Real {qty_str(neum_real)} | Obj {qty_str(neum_obj)}"
+            pct_str(neum["cumpl"]),
+            f"Real {qty_str(neum['real'])} | Obj {qty_str(neum['obj'])}"
         ), unsafe_allow_html=True)
-    with q3:
+    with c5:
         st.markdown(card_html_base(
             "📦 Otros Q",
-            pct_str(otros_q_c),
-            f"Real {qty_str(otros_q_real)} | Obj {qty_str(otros_q_obj)}"
+            pct_str(otros_q["cumpl"]),
+            f"Real {qty_str(otros_q['real'])} | Obj {qty_str(otros_q['obj'])}"
         ), unsafe_allow_html=True)
 
     st.markdown("---")
@@ -1929,11 +1935,203 @@ def render_direction_tab():
         for i, acc in enumerate(acciones, start=1):
             st.write(f"{i}. {acc}")
 
+
+# ============================================================
+# TAB NUEVO — RESUMEN EJECUTIVO DEL MES
+# ============================================================
+def _sector_table_exec(ctx):
+    q_split = build_q_split_summary(df_cut)
+    rows = [
+        {
+            "Sector": "Repuestos",
+            "Tipo": "$",
+            "Real": ctx["rep_real"],
+            "Objetivo": ctx["rep_obj"],
+            "Cumplimiento": ctx["rep_c"],
+            "GAP": ctx["rep_real"] - ctx["rep_obj"],
+            "Falta": max(ctx["rep_obj"] - ctx["rep_real"], 0),
+        },
+        {
+            "Sector": "Servicios",
+            "Tipo": "$",
+            "Real": ctx["srv_real"],
+            "Objetivo": ctx["srv_obj"],
+            "Cumplimiento": ctx["srv_c"],
+            "GAP": ctx["srv_real"] - ctx["srv_obj"],
+            "Falta": max(ctx["srv_obj"] - ctx["srv_real"], 0),
+        },
+    ]
+    for nombre in ["CPUs", "Neumáticos", "Otros Q"]:
+        q = q_split.get(nombre, {"real": np.nan, "obj": np.nan, "cumpl": np.nan})
+        real = q["real"]
+        obj = q["obj"]
+        rows.append({
+            "Sector": nombre,
+            "Tipo": "Q",
+            "Real": real,
+            "Objetivo": obj,
+            "Cumplimiento": q["cumpl"],
+            "GAP": real - obj if pd.notna(real) and pd.notna(obj) else np.nan,
+            "Falta": max(obj - real, 0) if pd.notna(real) and pd.notna(obj) else np.nan,
+        })
+    tabla = pd.DataFrame(rows)
+    tabla["Estado"] = tabla["Cumplimiento"].apply(lambda x: _status_from_cumpl(x)["label"])
+    tabla["Semáforo"] = tabla["Cumplimiento"].apply(lambda x: _status_from_cumpl(x)["emoji"])
+    return tabla
+
+def _format_exec_table(tabla: pd.DataFrame) -> pd.DataFrame:
+    t = tabla.copy()
+    for col in ["Real", "Objetivo", "GAP", "Falta"]:
+        t[col] = t.apply(lambda r: money_str(r[col]) if r["Tipo"] == "$" else qty_str(r[col]), axis=1)
+    t["Cumplimiento"] = t["Cumplimiento"].apply(pct_str)
+    return t[["Semáforo", "Sector", "Real", "Objetivo", "Cumplimiento", "GAP", "Falta", "Estado"]]
+
+def _best_worst_sucursal(dbase: pd.DataFrame, kpi_name: str, categorias_sel: list[str] | None = None):
+    if dbase is None or dbase.empty:
+        return None, None
+    x = dbase[(dbase["Tipo_KPI"] == "$") & (dbase["KPI"].str.upper() == kpi_name.upper())].copy()
+    if categorias_sel is not None:
+        x = x[x["Categoria_KPI"].isin(categorias_sel)].copy()
+    x = apply_obj0_filter(x, show_obj0)
+    if x.empty:
+        return None, None
+    g = x.groupby("Sucursal", as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
+    g["Cumpl"] = g.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    g = g[~g["Cumpl"].isna()].copy()
+    if g.empty:
+        return None, None
+    best = g.sort_values("Cumpl", ascending=False).iloc[0].to_dict()
+    worst = g.sort_values("Cumpl", ascending=True).iloc[0].to_dict()
+    return best, worst
+
+def render_tab_resumen_ejecutivo_mes():
+    st.markdown("## 📋 Resumen Ejecutivo del Mes")
+    st.caption(
+        "Conclusiones automáticas de performance: fortalezas, oportunidades de mejora, riesgos y prioridades. "
+        "Respeta los filtros de mes, semana, sucursal y aperturas P&L."
+    )
+    st.markdown("---")
+
+    ctx = build_direction_context()
+    tabla = _sector_table_exec(ctx)
+    tabla_valid = tabla[tabla["Objetivo"].fillna(0) > 0].copy()
+
+    total_status = _status_from_cumpl(ctx["total_c"])
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(card_html_base("Estado general", f"{total_status['emoji']} {total_status['label']}", f"Cumplimiento {pct_str(ctx['total_c'])}"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html_base("Facturación", money_str(ctx["total_real"]), f"Objetivo {money_str(ctx['total_obj'])}"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card_html_base("Falta económica", money_str(ctx["falta_total"]), f"GAP {money_str(ctx['gap_total'])}"), unsafe_allow_html=True)
+    with c4:
+        st.markdown(card_html_base("Pend. facturación", qty_str(ctx["op_pfact"]["count"]), f"Potencial {money_str(ctx['op_pfact']['monto'])}"), unsafe_allow_html=True)
+
+    st.markdown("### 🟢 Lo bueno del mes")
+    buenos = []
+    if pd.notna(ctx["total_c"]) and ctx["total_c"] >= 1:
+        buenos.append(f"Postventa supera el objetivo acumulado con cumplimiento de {pct_str(ctx['total_c'])}.")
+    elif pd.notna(ctx["total_c"]) and ctx["total_c"] >= 0.95:
+        buenos.append(f"Postventa queda muy cerca del objetivo acumulado ({pct_str(ctx['total_c'])}), con desvío recuperable.")
+
+    for _, r in tabla_valid.sort_values("Cumplimiento", ascending=False).iterrows():
+        if pd.notna(r["Cumplimiento"]) and r["Cumplimiento"] >= 1:
+            if r["Tipo"] == "$":
+                buenos.append(f"{r['Sector']} cumple/supera objetivo: {pct_str(r['Cumplimiento'])} ({money_str(r['Real'])} vs {money_str(r['Objetivo'])}).")
+            else:
+                buenos.append(f"{r['Sector']} cumple/supera objetivo: {pct_str(r['Cumplimiento'])} ({qty_str(r['Real'])} vs {qty_str(r['Objetivo'])}).")
+
+    best_rep, worst_rep = _best_worst_sucursal(df_cut, "REPUESTOS", rep_sel)
+    best_srv, worst_srv = _best_worst_sucursal(df_cut, "SERVICIOS", srv_sel)
+    if best_rep:
+        buenos.append(f"Mejor sucursal en Repuestos: {best_rep['Sucursal']} con {pct_str(best_rep['Cumpl'])}.")
+    if best_srv:
+        buenos.append(f"Mejor sucursal en Servicios: {best_srv['Sucursal']} con {pct_str(best_srv['Cumpl'])}.")
+
+    if not buenos:
+        st.info("No se detectan sobrecumplimientos relevantes con los filtros actuales; el foco debería ponerse en recuperación de brechas.")
+    else:
+        for b in buenos[:6]:
+            st.success(b)
+
+    st.markdown("### 🟡 Oportunidades de mejora")
+    oportunidades = []
+    for _, r in tabla_valid.sort_values("Cumplimiento", ascending=True).iterrows():
+        if pd.notna(r["Cumplimiento"]) and r["Cumplimiento"] < 1:
+            if r["Tipo"] == "$":
+                oportunidades.append(f"{r['Sector']} está en {pct_str(r['Cumplimiento'])}; falta {money_str(r['Falta'])} para cumplir.")
+            else:
+                oportunidades.append(f"{r['Sector']} está en {pct_str(r['Cumplimiento'])}; faltan {qty_str(r['Falta'])} unidades para cumplir.")
+    if worst_rep and pd.notna(worst_rep.get("Cumpl")) and worst_rep["Cumpl"] < 1:
+        oportunidades.append(f"Repuestos: revisar {worst_rep['Sucursal']}, que muestra el menor cumplimiento ({pct_str(worst_rep['Cumpl'])}).")
+    if worst_srv and pd.notna(worst_srv.get("Cumpl")) and worst_srv["Cumpl"] < 1:
+        oportunidades.append(f"Servicios: revisar {worst_srv['Sucursal']}, que muestra el menor cumplimiento ({pct_str(worst_srv['Cumpl'])}).")
+    if ctx["op_abiertas"]["count"] > 0:
+        oportunidades.append(f"Órdenes abiertas: {qty_str(ctx['op_abiertas']['count'])} casos activos; oportunidad de convertir backlog en facturación.")
+    if ctx["op_pfact"]["count"] > 0:
+        oportunidades.append(f"Pendientes de facturación: {qty_str(ctx['op_pfact']['count'])} casos y {money_str(ctx['op_pfact']['monto'])} potencial administrativo.")
+    if ctx["op_presup"]["count"] > 0:
+        oportunidades.append(f"Presupuestos: {qty_str(ctx['op_presup']['count'])} oportunidades pendientes de seguimiento comercial.")
+
+    if not oportunidades:
+        st.success("No se detectan oportunidades críticas de mejora con los filtros actuales.")
+    else:
+        for o in oportunidades[:8]:
+            st.warning(o)
+
+    st.markdown("### 🔴 Riesgos / alertas")
+    riesgos = []
+    if pd.notna(ctx["total_c"]) and ctx["total_c"] < 0.90:
+        riesgos.append("El cumplimiento total está por debajo del 90%; requiere intervención directa por sucursal y por apertura.")
+    if ctx.get("driver"):
+        riesgos.append(f"Principal desvío económico: {ctx['driver']['KPI']} / {ctx['driver']['Cat']} con gap de {money_str(ctx['driver']['Gap'])}.")
+    if pd.notna(ctx["total_proy"]) and ctx["total_obj"] > 0:
+        proy_c = safe_ratio(ctx["total_proy"], ctx["total_obj"])
+        if pd.notna(proy_c) and proy_c < 1:
+            riesgos.append(f"La proyección de cierre por run-rate queda en {pct_str(proy_c)} del objetivo si no se corrige el ritmo.")
+    if ctx["op_pfact"]["monto"] is not None and pd.notna(ctx["op_pfact"]["monto"]) and ctx["op_pfact"]["monto"] > 0:
+        riesgos.append("El pendiente de facturación puede distorsionar la lectura comercial si no se convierte rápidamente en caja/facturación.")
+
+    if not riesgos:
+        st.success("Sin alertas críticas detectadas con los filtros actuales.")
+    else:
+        for r in riesgos[:6]:
+            st.error(r)
+
+    st.markdown("### 📊 Semáforo ejecutivo por sector")
+    st.dataframe(_format_exec_table(tabla), use_container_width=True, hide_index=True)
+
+    st.markdown("### 🎯 Prioridades sugeridas")
+    prioridades = []
+    if ctx["falta_total"] > 0:
+        prioridades.append(f"Cerrar el gap económico de {money_str(ctx['falta_total'])} priorizando las sucursales y aperturas con mayor falta absoluta.")
+    pendientes = tabla_valid[tabla_valid["Falta"].fillna(0) > 0].sort_values("Falta", ascending=False)
+    for _, r in pendientes.head(3).iterrows():
+        prioridades.append(f"Plan específico para {r['Sector']}: responsable, meta diaria y seguimiento hasta cierre.")
+    if ctx["op_pfact"]["count"] > 0:
+        prioridades.append("Convertir pendientes de facturación en prioridad administrativa diaria.")
+    if ctx["op_presup"]["count"] > 0:
+        prioridades.append("Activar seguimiento comercial de presupuestos de mayor importe y mayor antigüedad.")
+    if not prioridades:
+        prioridades.append("Sostener el ritmo, proteger margen y monitorear que el cumplimiento no dependa de una sola sucursal o línea.")
+
+    for i, p in enumerate(prioridades[:6], start=1):
+        st.markdown(f"**{i}.** {p}")
+
+    st.markdown("---")
+    with st.expander("🧾 Mensaje ejecutivo listo para copiar", expanded=False):
+        mensaje = build_direction_narrative(ctx)
+        st.write(mensaje)
+        st.write("Prioridades:")
+        for i, p in enumerate(prioridades[:5], start=1):
+            st.write(f"{i}. {p}")
+
 # ---------------------------
 # TABS
 # ---------------------------
-tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab0, tab_resumen_mes, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🏢 Dirección",
+    "📋 Resumen Ejecutivo Mes",
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
     "🧪 Gestión (desvíos)",
@@ -1948,6 +2146,12 @@ tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 # ============================================================
 with tab0:
     render_direction_tab()
+
+# ============================================================
+# TAB NUEVO — RESUMEN EJECUTIVO MES
+# ============================================================
+with tab_resumen_mes:
+    render_tab_resumen_ejecutivo_mes()
 
 # ============================================================
 # TAB 1 — P&L
