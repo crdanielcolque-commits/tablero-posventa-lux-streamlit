@@ -165,6 +165,20 @@ def multiselect_green_tags_css():
 
 st.markdown(multiselect_green_tags_css(), unsafe_allow_html=True)
 
+# Paleta verde para los controles principales, sin modificar semáforos de riesgo.
+st.markdown("""
+<style>
+:root { --primary-color: #16a34a; }
+div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"],
+button[data-testid="baseButton-primary"] { background-color:#16a34a !important; border-color:#16a34a !important; color:white !important; }
+button[data-testid="baseButton-primary"]:hover { background-color:#15803d !important; border-color:#15803d !important; }
+.stTabs [data-baseweb="tab"][aria-selected="true"] { color:#15803d !important; }
+.stTabs [data-baseweb="tab-highlight"] { background-color:#16a34a !important; }
+div[data-baseweb="checkbox"] input:checked + div, div[data-baseweb="radio"] input:checked + div { border-color:#16a34a !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
 def norm_text(x: str) -> str:
     if x is None:
         return ""
@@ -1916,7 +1930,40 @@ def render_direction_tab():
         df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS") & (df_month["Categoria_KPI"].isin(rep_sel))],
         df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS") & (df_month["Categoria_KPI"].isin(srv_sel))]
     ], ignore_index=True)
-    spark_evolucion(total_month_dir, chart_key="spark_direccion_total")
+    # Evolución consolidada y por sucursal: solo importes económicos y aperturas P&L seleccionadas.
+    evolucion = apply_obj0_filter(total_month_dir.copy(), show_obj0)
+    if evolucion.empty:
+        st.info("No hay datos económicos para el período y las aperturas seleccionadas.")
+    else:
+        semanal = evolucion.groupby(["Mes", "Semana_Mes", "Sucursal"], as_index=False).agg(
+            Real=("Real_val", "sum"), Obj=("Obj_val", "sum")
+        )
+        consolidado = semanal.groupby(["Mes", "Semana_Mes"], as_index=False)[["Real", "Obj"]].sum()
+        consolidado["Sucursal"] = "Consolidado"
+        series = pd.concat([consolidado, semanal], ignore_index=True)
+        series["Cumpl"] = series.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+        series = series.dropna(subset=["Cumpl"]).copy()
+        if series.empty:
+            st.info("No hay objetivos económicos válidos para calcular el cumplimiento semanal.")
+        else:
+            series["Periodo"] = series["Mes"].apply(build_month_label) + " - S" + series["Semana_Mes"].astype(str)
+            orden = (series[["Mes", "Semana_Mes", "Periodo"]].drop_duplicates()
+                     .sort_values(["Mes", "Semana_Mes"])["Periodo"].tolist())
+            series["Cumpl_visual"] = series["Cumpl"].clip(upper=cap_val) if cap_on else series["Cumpl"]
+            series["Cumpl_txt"] = series["Cumpl"].apply(pct_str)
+            nombres = ["Consolidado"] + sorted([x for x in series["Sucursal"].unique() if x != "Consolidado"])
+            fig_dir = px.line(
+                series, x="Periodo", y="Cumpl_visual", color="Sucursal", markers=True,
+                category_orders={"Periodo": orden, "Sucursal": nombres},
+                hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
+                labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Sucursal": "Sucursal", "Cumpl_txt": "Cumplimiento real"}
+            )
+            fig_dir.update_yaxes(tickformat=".0%")
+            fig_dir.update_layout(height=350, margin=dict(l=10,r=10,t=15,b=10), legend_title_text="Sucursal")
+            fig_dir.update_traces(line_width=2)
+            fig_dir.for_each_trace(lambda t: t.update(line=dict(width=4, dash="dash")) if t.name == "Consolidado" else None)
+            st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
+            st.caption("Consolidado y sucursales seleccionadas. Cada punto = real económico / objetivo económico de esa semana.")
 
     st.markdown("---")
     st.markdown("### 🚦 Matriz Dirección — Sucursal x bloque")
