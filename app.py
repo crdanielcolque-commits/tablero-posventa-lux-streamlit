@@ -1793,6 +1793,20 @@ def render_direction_heatmap(ctx):
         hide_index=True
     )
 
+
+def build_regional_weekly(evolucion, sucursales):
+    """Suma importes por semana antes de calcular el cumplimiento regional."""
+    sucursales_norm = {norm_text(s) for s in sucursales}
+    regional = evolucion[
+        evolucion["Sucursal"].map(norm_text).isin(sucursales_norm)
+    ]
+    semanal = regional.groupby(["Mes", "Semana_Mes"], as_index=False).agg(
+        Real=("Real_val", "sum"), Obj=("Obj_val", "sum")
+    )
+    semanal["Cumpl"] = semanal.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
+    return semanal.dropna(subset=["Cumpl"]).sort_values(["Mes", "Semana_Mes"])
+
+
 def render_direction_tab():
     st.markdown("## 🏢 Dirección — Resumen Ejecutivo")
     st.caption(
@@ -1964,6 +1978,37 @@ def render_direction_tab():
             fig_dir.for_each_trace(lambda t: t.update(line=dict(width=4, dash="dash")) if t.name == "Consolidado" else None)
             st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
             st.caption("Consolidado y sucursales seleccionadas. Cada punto = real económico / objetivo económico de esa semana.")
+
+
+    regional_columns = st.columns(2)
+    regional_groups = [
+        ("Posventa Centro", ["Salta", "Salta Capital", "Jujuy", "Taller Móvil"], "centro", "#16a34a"),
+        ("Posventa Interior", ["Tartagal", "Lajitas"], "interior", "#2563eb"),
+    ]
+    # Usa los mismos filtros económicos del gráfico general y las semanas elegidas.
+    regional_source = evolucion[evolucion["Semana_Num"].isin(semanas_sel)]
+    for column, (title, sucursales, chart_key, color) in zip(regional_columns, regional_groups):
+        with column:
+            st.markdown(f"#### {title}")
+            st.caption("Salta Capital · Jujuy · Taller Móvil" if chart_key == "centro" else "Tartagal · Lajitas")
+            regional = build_regional_weekly(regional_source, sucursales)
+            if regional.empty:
+                st.info("Sin datos con objetivos válidos para este grupo y los filtros seleccionados.")
+                continue
+            regional["Periodo"] = regional["Mes"].apply(build_month_label) + " - S" + regional["Semana_Mes"].astype(str)
+            regional["Cumpl_visual"] = regional["Cumpl"].clip(upper=cap_val) if cap_on else regional["Cumpl"]
+            regional["Cumpl_txt"] = regional["Cumpl"].apply(pct_str)
+            fig_regional = px.line(
+                regional, x="Periodo", y="Cumpl_visual", markers=True,
+                category_orders={"Periodo": regional["Periodo"].tolist()},
+                hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
+                labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Cumpl_txt": "Cumplimiento real"},
+            )
+            fig_regional.update_traces(line=dict(color=color, width=3))
+            fig_regional.update_yaxes(tickformat=".0%")
+            fig_regional.update_layout(height=350, margin=dict(l=10, r=10, t=15, b=10))
+            st.plotly_chart(fig_regional, use_container_width=True, key=f"direccion_posventa_{chart_key}")
+            st.caption("Cumplimiento del grupo = suma del real / suma del objetivo semanal. Respeta las sucursales seleccionadas.")
 
     st.markdown("---")
     st.markdown("### 🚦 Matriz Dirección — Sucursal x bloque")
