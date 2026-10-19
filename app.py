@@ -1957,49 +1957,44 @@ def render_direction_tab():
     ], ignore_index=True)
     # Evolución consolidada y por sucursal: solo importes económicos y aperturas P&L seleccionadas.
     evolucion = apply_obj0_filter(total_month_dir.copy(), show_obj0)
-    # Comparte escala entre la vista general y ambos grupos regionales.
-    scale_series = []
-    for keys in [["Mes", "Semana_Mes", "Sucursal"], ["Mes", "Semana_Mes"]]:
-        totals = evolucion.groupby(keys, as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
-        scale_series.extend(safe_ratio(r.Real, r.Obj) for r in totals.itertuples())
+    # Total completo de Centro + Interior; no depende del filtro de sucursal.
+    total_members = ["Salta", "Salta Capital", "Jujuy", "Taller Móvil", "Tartagal", "Lajitas"]
+    total_source = df[
+        df["Mes"].isin(meses_sel)
+        & df["Semana_Num"].isin(semanas_sel)
+        & (df["Tipo_KPI"] == "$")
+        & (
+            ((df["KPI"].str.upper() == "REPUESTOS") & df["Categoria_KPI"].isin(rep_sel))
+            | ((df["KPI"].str.upper() == "SERVICIOS") & df["Categoria_KPI"].isin(srv_sel))
+        )
+    ].copy()
+    total_source = apply_obj0_filter(total_source, show_obj0)
+    series = build_regional_weekly(total_source, total_members)
+    scale_series = series["Cumpl"].tolist()
     for members in [["Salta", "Salta Capital", "Jujuy", "Taller Móvil"], ["Tartagal", "Lajitas"]]:
-        scale_series.extend(build_regional_weekly(evolucion, members)["Cumpl"].tolist())
+        scale_series.extend(build_regional_weekly(evolucion[evolucion["Semana_Num"].isin(semanas_sel)], members)["Cumpl"].tolist())
     scale_values = pd.Series(scale_series, dtype="float64")
     if cap_on:
         scale_values = scale_values.clip(upper=cap_val)
     direction_axis_range = cumplimiento_axis_range(scale_values)
-    if evolucion.empty:
-        st.info("No hay datos económicos para el período y las aperturas seleccionadas.")
+    if series.empty:
+        st.info("No hay objetivos económicos válidos para calcular el cumplimiento semanal total.")
     else:
-        semanal = evolucion.groupby(["Mes", "Semana_Mes", "Sucursal"], as_index=False).agg(
-            Real=("Real_val", "sum"), Obj=("Obj_val", "sum")
+        series["Periodo"] = series["Mes"].apply(build_month_label) + " - S" + series["Semana_Mes"].astype(str)
+        orden = series["Periodo"].tolist()
+        series["Cumpl_visual"] = series["Cumpl"].clip(upper=cap_val) if cap_on else series["Cumpl"]
+        series["Cumpl_txt"] = series["Cumpl"].apply(pct_str)
+        fig_dir = px.line(
+            series, x="Periodo", y="Cumpl_visual", markers=True, text="Cumpl_txt",
+            category_orders={"Periodo": orden},
+            hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
+            labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Cumpl_txt": "Cumplimiento real"}
         )
-        consolidado = semanal.groupby(["Mes", "Semana_Mes"], as_index=False)[["Real", "Obj"]].sum()
-        consolidado["Sucursal"] = "Consolidado"
-        series = pd.concat([consolidado, semanal], ignore_index=True)
-        series["Cumpl"] = series.apply(lambda r: safe_ratio(r["Real"], r["Obj"]), axis=1)
-        series = series.dropna(subset=["Cumpl"]).copy()
-        if series.empty:
-            st.info("No hay objetivos económicos válidos para calcular el cumplimiento semanal.")
-        else:
-            series["Periodo"] = series["Mes"].apply(build_month_label) + " - S" + series["Semana_Mes"].astype(str)
-            orden = (series[["Mes", "Semana_Mes", "Periodo"]].drop_duplicates()
-                     .sort_values(["Mes", "Semana_Mes"])["Periodo"].tolist())
-            series["Cumpl_visual"] = series["Cumpl"].clip(upper=cap_val) if cap_on else series["Cumpl"]
-            series["Cumpl_txt"] = series["Cumpl"].apply(pct_str)
-            nombres = ["Consolidado"] + sorted([x for x in series["Sucursal"].unique() if x != "Consolidado"])
-            fig_dir = px.line(
-                series, x="Periodo", y="Cumpl_visual", color="Sucursal", markers=True, text="Cumpl_txt",
-                category_orders={"Periodo": orden, "Sucursal": nombres},
-                hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
-                labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Sucursal": "Sucursal", "Cumpl_txt": "Cumplimiento real"}
-            )
-            fig_dir.update_yaxes(tickformat=".0%", range=direction_axis_range)
-            fig_dir.update_layout(height=350, margin=dict(l=10,r=10,t=15,b=10), legend_title_text="Sucursal")
-            fig_dir.update_traces(line_width=2, mode="lines+markers+text", textposition="top center", textfont_size=11)
-            fig_dir.for_each_trace(lambda t: t.update(line=dict(width=4, dash="dash")) if t.name == "Consolidado" else None)
-            st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
-            st.caption("Consolidado y sucursales seleccionadas. Cada punto = real económico / objetivo económico de esa semana.")
+        fig_dir.update_yaxes(tickformat=".0%", range=direction_axis_range)
+        fig_dir.update_layout(height=350, margin=dict(l=10,r=10,t=15,b=10))
+        fig_dir.update_traces(line=dict(width=4, color="#16a34a"), mode="lines+markers+text", textposition="top center", textfont_size=11)
+        st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
+        st.caption("Total Posventa = Centro + Interior completos. Cada punto = suma del real / suma del objetivo de esa semana.")
 
 
     regional_columns = st.columns(2)
