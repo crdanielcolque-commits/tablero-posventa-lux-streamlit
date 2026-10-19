@@ -1161,6 +1161,17 @@ def principal_driver_gap(d_pl: pd.DataFrame):
     row = g.iloc[0]
     return {"KPI": str(row["KPI"]), "Cat": str(row["Categoria_KPI"]), "Gap": float(row["Gap"])}
 
+def cumplimiento_axis_range(values):
+    """Escala proporcional: cero visible y al menos el objetivo del 100%."""
+    values = pd.to_numeric(pd.Series(values, dtype="float64"), errors="coerce")
+    values = values[np.isfinite(values)]
+    highest = max(1.0, float(values.max())) if not values.empty else 1.0
+    lowest = min(0.0, float(values.min())) if not values.empty else 0.0
+    upper = float(np.ceil(highest * 1.12 / 0.25) * 0.25)
+    lower = float(np.floor(lowest * 1.12 / 0.25) * 0.25)
+    return [lower, upper]
+
+
 def spark_evolucion(df_scope_month: pd.DataFrame, chart_key: str):
     if df_scope_month is None or df_scope_month.empty:
         return
@@ -1188,12 +1199,12 @@ def spark_evolucion(df_scope_month: pd.DataFrame, chart_key: str):
     fig = px.line(gg, x="Eje", y="Cumpl_plot", markers=True, text="txt")
     fig.update_traces(mode="lines+markers+text", textposition="top center")
     fig.update_layout(
-        height=150,
-        margin=dict(l=10, r=10, t=10, b=10),
+        height=220,
+        margin=dict(l=10, r=10, t=25, b=10),
         xaxis_title="",
         yaxis_title=""
     )
-    fig.update_yaxes(tickformat=".0%")
+    fig.update_yaxes(tickformat=".0%", range=cumplimiento_axis_range(gg["Cumpl_plot"]))
 
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
@@ -1946,6 +1957,17 @@ def render_direction_tab():
     ], ignore_index=True)
     # Evolución consolidada y por sucursal: solo importes económicos y aperturas P&L seleccionadas.
     evolucion = apply_obj0_filter(total_month_dir.copy(), show_obj0)
+    # Comparte escala entre la vista general y ambos grupos regionales.
+    scale_series = []
+    for keys in [["Mes", "Semana_Mes", "Sucursal"], ["Mes", "Semana_Mes"]]:
+        totals = evolucion.groupby(keys, as_index=False).agg(Real=("Real_val", "sum"), Obj=("Obj_val", "sum"))
+        scale_series.extend(safe_ratio(r.Real, r.Obj) for r in totals.itertuples())
+    for members in [["Salta", "Salta Capital", "Jujuy", "Taller Móvil"], ["Tartagal", "Lajitas"]]:
+        scale_series.extend(build_regional_weekly(evolucion, members)["Cumpl"].tolist())
+    scale_values = pd.Series(scale_series, dtype="float64")
+    if cap_on:
+        scale_values = scale_values.clip(upper=cap_val)
+    direction_axis_range = cumplimiento_axis_range(scale_values)
     if evolucion.empty:
         st.info("No hay datos económicos para el período y las aperturas seleccionadas.")
     else:
@@ -1967,14 +1989,14 @@ def render_direction_tab():
             series["Cumpl_txt"] = series["Cumpl"].apply(pct_str)
             nombres = ["Consolidado"] + sorted([x for x in series["Sucursal"].unique() if x != "Consolidado"])
             fig_dir = px.line(
-                series, x="Periodo", y="Cumpl_visual", color="Sucursal", markers=True,
+                series, x="Periodo", y="Cumpl_visual", color="Sucursal", markers=True, text="Cumpl_txt",
                 category_orders={"Periodo": orden, "Sucursal": nombres},
                 hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
                 labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Sucursal": "Sucursal", "Cumpl_txt": "Cumplimiento real"}
             )
-            fig_dir.update_yaxes(tickformat=".0%")
+            fig_dir.update_yaxes(tickformat=".0%", range=direction_axis_range)
             fig_dir.update_layout(height=350, margin=dict(l=10,r=10,t=15,b=10), legend_title_text="Sucursal")
-            fig_dir.update_traces(line_width=2)
+            fig_dir.update_traces(line_width=2, mode="lines+markers+text", textposition="top center", textfont_size=11)
             fig_dir.for_each_trace(lambda t: t.update(line=dict(width=4, dash="dash")) if t.name == "Consolidado" else None)
             st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
             st.caption("Consolidado y sucursales seleccionadas. Cada punto = real económico / objetivo económico de esa semana.")
@@ -1999,13 +2021,13 @@ def render_direction_tab():
             regional["Cumpl_visual"] = regional["Cumpl"].clip(upper=cap_val) if cap_on else regional["Cumpl"]
             regional["Cumpl_txt"] = regional["Cumpl"].apply(pct_str)
             fig_regional = px.line(
-                regional, x="Periodo", y="Cumpl_visual", markers=True,
+                regional, x="Periodo", y="Cumpl_visual", markers=True, text="Cumpl_txt",
                 category_orders={"Periodo": regional["Periodo"].tolist()},
                 hover_data={"Cumpl_txt": True, "Real": ":,.0f", "Obj": ":,.0f", "Cumpl_visual": False},
                 labels={"Periodo": "Semana", "Cumpl_visual": "Cumplimiento", "Cumpl_txt": "Cumplimiento real"},
             )
-            fig_regional.update_traces(line=dict(color=color, width=3))
-            fig_regional.update_yaxes(tickformat=".0%")
+            fig_regional.update_traces(line=dict(color=color, width=3), mode="lines+markers+text", textposition="top center")
+            fig_regional.update_yaxes(tickformat=".0%", range=direction_axis_range)
             fig_regional.update_layout(height=350, margin=dict(l=10, r=10, t=15, b=10))
             st.plotly_chart(fig_regional, use_container_width=True, key=f"direccion_posventa_{chart_key}")
             st.caption("Cumplimiento del grupo = suma del real / suma del objetivo semanal. Respeta las sucursales seleccionadas.")
