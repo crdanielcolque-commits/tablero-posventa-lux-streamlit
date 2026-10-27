@@ -20,6 +20,7 @@ import streamlit as st
 import plotly.express as px
 import gdown
 from debtors import render_debtors_tab
+from credit_balances import render_credit_balances_tab
 from io import BytesIO
 
 from openpyxl import load_workbook
@@ -2090,7 +2091,7 @@ def render_direction_tab():
 # ---------------------------
 # TABS
 # ---------------------------
-tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "🏢 Dirección",
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
@@ -2100,7 +2101,8 @@ tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🧾 Pend. Facturación",
     "💬 Presupuestos",
     "🎯 Cierre GAP",
-    "💳 Deudores Postventa"
+    "💳 Deudores Postventa",
+    "💰 Saldos a favor"
 ])
 # ============================================================
 # TAB 0 — DIRECCIÓN
@@ -2490,3 +2492,8 @@ with tab8:
 # TAB 9 — DEUDORES POSTVENTA
 with tab9:
     render_debtors_tab(df_deudores_raw, DEUDORES_SHEET_FOUND)
+
+
+# TAB 10 — SALDOS A FAVOR Y CONCILIACIÓN
+with tab10:
+    render_credit_balances_tab(df_deudores_raw, DEUDORES_SHEET_FOUND)
