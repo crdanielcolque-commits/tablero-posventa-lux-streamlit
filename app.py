@@ -19,6 +19,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import gdown
+from debtors import render_debtors_tab
 from io import BytesIO
 
 from openpyxl import load_workbook
@@ -816,17 +817,21 @@ def load_from_drive():
     df_abiertas = pd.read_excel(xls, sheet_name=abiertas_sheet) if abiertas_sheet else pd.DataFrame()
     df_pfact = pd.read_excel(xls, sheet_name=pendientes_fact_sheet) if pendientes_fact_sheet else pd.DataFrame()
     df_presup = pd.read_excel(xls, sheet_name=presup_sheet) if presup_sheet else pd.DataFrame()
+    deudores_sheet = find_sheet_name(sheet_names, "Deudores Postventa")
+    df_deudores = pd.read_excel(xls, sheet_name=deudores_sheet) if deudores_sheet else pd.DataFrame()
 
     return (
         df0, df_dias, df_res, sheet_names, dias_sheet, resumen_sheet,
         df_abiertas, df_pfact, df_presup,
-        abiertas_sheet, pendientes_fact_sheet, presup_sheet
+        abiertas_sheet, pendientes_fact_sheet, presup_sheet,
+        df_deudores, deudores_sheet
     )
 
 (
     df, df_dias_habiles, df_resumen_mes, SHEET_NAMES, DIAS_SHEET_FOUND, RESUMEN_SHEET_FOUND,
     df_abiertas_raw, df_pfact_raw, df_presup_raw,
-    ABIERTAS_SHEET_FOUND, PFACT_SHEET_FOUND, PRESUP_SHEET_FOUND
+    ABIERTAS_SHEET_FOUND, PFACT_SHEET_FOUND, PRESUP_SHEET_FOUND,
+    df_deudores_raw, DEUDORES_SHEET_FOUND
 ) = load_from_drive()
 
 # ---------------------------
@@ -2085,7 +2090,7 @@ def render_direction_tab():
 # ---------------------------
 # TABS
 # ---------------------------
-tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🏢 Dirección",
     "🧩 P&L (Repuestos vs Servicios)",
     "📌 KPIs (resto)",
@@ -2094,7 +2099,8 @@ tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🔧 Órdenes Abiertas",
     "🧾 Pend. Facturación",
     "💬 Presupuestos",
-    "🎯 Cierre GAP"
+    "🎯 Cierre GAP",
+    "💳 Deudores Postventa"
 ])
 # ============================================================
 # TAB 0 — DIRECCIÓN
@@ -2479,3 +2485,8 @@ with tab7:
 # ============================================================
 with tab8:
     render_tab_cierre_gap()
+
+
+# TAB 9 — DEUDORES POSTVENTA
+with tab9:
+    render_debtors_tab(df_deudores_raw, DEUDORES_SHEET_FOUND)
