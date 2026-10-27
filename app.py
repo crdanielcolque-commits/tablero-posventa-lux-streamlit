@@ -141,42 +141,53 @@ def hide_sidebar_css():
     </style>
     """
 
-def multiselect_green_tags_css():
+def executive_controls_css():
     return """
     <style>
-    div[data-baseweb="select"] span[data-baseweb="tag"]{
-        background-color: #16a34a !important;
-        border-color: #16a34a !important;
+    :root { --primary-color: #1d4ed8; }
+    /* BaseWeb usa distintos elementos HTML para las etiquetas según la versión. */
+    [data-testid="stMultiSelect"] [data-baseweb="tag"],
+    div[data-baseweb="select"] [data-baseweb="tag"] {
+        background-color: #1d4ed8 !important;
+        border-color: #1d4ed8 !important;
+        color: #ffffff !important;
+        border-radius: 6px !important;
     }
-    div[data-baseweb="select"] span[data-baseweb="tag"] *,
-    div[data-baseweb="select"] span[data-baseweb="tag"] span{
+    [data-testid="stMultiSelect"] [data-baseweb="tag"]:hover,
+    div[data-baseweb="select"] [data-baseweb="tag"]:hover {
+        background-color: #1e40af !important;
+        border-color: #1e40af !important;
+    }
+    [data-baseweb="select"] [data-baseweb="tag"] * {
         color: #ffffff !important;
     }
-    div[data-baseweb="select"] span[data-baseweb="tag"] svg{
-        fill: #ffffff !important;
+    [data-baseweb="select"] [data-baseweb="tag"] svg {
+        fill: currentColor !important;
         color: #ffffff !important;
     }
-    div[data-baseweb="select"] span[data-baseweb="tag"] svg:hover{
-        fill: #eaffea !important;
-        color: #eaffea !important;
+    div.stButton > button[kind="primary"],
+    div.stDownloadButton > button[kind="primary"],
+    button[data-testid="stBaseButton-primary"],
+    button[data-testid="baseButton-primary"] {
+        background-color: #1d4ed8 !important;
+        border-color: #1d4ed8 !important;
+        color: #ffffff !important;
     }
+    button[kind="primary"]:hover,
+    button[data-testid="stBaseButton-primary"]:hover,
+    button[data-testid="baseButton-primary"]:hover {
+        background-color: #1e40af !important;
+        border-color: #1e40af !important;
+    }
+    .stTabs [data-baseweb="tab"][aria-selected="true"] { color: #1d4ed8 !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: #1d4ed8 !important; }
+    div[data-baseweb="checkbox"] input:checked + div,
+    div[data-baseweb="radio"] input:checked + div { border-color: #1d4ed8 !important; }
     </style>
     """
 
-st.markdown(multiselect_green_tags_css(), unsafe_allow_html=True)
 
-# Paleta verde para los controles principales, sin modificar semáforos de riesgo.
-st.markdown("""
-<style>
-:root { --primary-color: #16a34a; }
-div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"],
-button[data-testid="baseButton-primary"] { background-color:#16a34a !important; border-color:#16a34a !important; color:white !important; }
-button[data-testid="baseButton-primary"]:hover { background-color:#15803d !important; border-color:#15803d !important; }
-.stTabs [data-baseweb="tab"][aria-selected="true"] { color:#15803d !important; }
-.stTabs [data-baseweb="tab-highlight"] { background-color:#16a34a !important; }
-div[data-baseweb="checkbox"] input:checked + div, div[data-baseweb="radio"] input:checked + div { border-color:#16a34a !important; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown(executive_controls_css(), unsafe_allow_html=True)
 
 
 def norm_text(x: str) -> str:
