@@ -1076,6 +1076,20 @@ for x in srv_open:
 st.session_state["rep_sel"] = [x for x in st.session_state["rep_sel"] if x in rep_open]
 st.session_state["srv_sel"] = [x for x in st.session_state["srv_sel"] if x in srv_open]
 
+def is_warranty_opening(value):
+    return "garant" in norm_text(value)
+
+
+def filter_warranty_data(data, include_warranties):
+    if include_warranties:
+        return data.copy()
+    warranty_rows = (
+        data["KPI"].astype(str).str.upper().isin(["REPUESTOS", "SERVICIOS"])
+        & data["Categoria_KPI"].map(is_warranty_opening)
+    )
+    return data.loc[~warranty_rows].copy()
+
+
 def render_pl_multiselect(area="sidebar"):
     container = st.sidebar if area == "sidebar" else st.container()
     with container:
@@ -1090,6 +1104,16 @@ def render_pl_multiselect(area="sidebar"):
             srv_open, default=st.session_state["srv_sel"],
             key=f"srv_sel_{area}"
         )
+        st.session_state["include_warranties"] = st.toggle(
+            "Incluir garantías",
+            value=st.session_state.get("include_warranties", True),
+            key=f"include_warranties_{area}",
+            help="Activa o excluye en conjunto las aperturas de garantía de repuestos y mano de obra. Conserva las demás variables elegidas.",
+        )
+        st.caption(
+            "Con garantías" if st.session_state["include_warranties"]
+            else "Sin garantías de repuestos ni mano de obra. Las selecciones se conservan para volver a incluirlas."
+        )
 
 if st.session_state["modo_presentacion"]:
     with st.expander("Abrir variables P&L (presentación)", expanded=False):
@@ -1098,8 +1122,16 @@ else:
     st.sidebar.markdown("---")
     render_pl_multiselect(area="sidebar")
 
-rep_sel = st.session_state["rep_sel"]
-srv_sel = st.session_state["srv_sel"]
+include_warranties = bool(st.session_state.get("include_warranties", True))
+rep_sel = [x for x in st.session_state["rep_sel"] if include_warranties or not is_warranty_opening(x)]
+srv_sel = [x for x in st.session_state["srv_sel"] if include_warranties or not is_warranty_opening(x)]
+
+# Copias filtradas para todas las vistas económicas, Gestión, Cierre GAP y Excel.
+# Las selecciones originales se conservan para restaurarlas al activar garantías.
+df = filter_warranty_data(df, include_warranties)
+df_scope = filter_warranty_data(df_scope, include_warranties)
+df_cut = filter_warranty_data(df_cut, include_warranties)
+df_month = filter_warranty_data(df_month, include_warranties)
 
 # ---------------------------
 # FUNCIONES DE NEGOCIO P&L
@@ -1347,6 +1379,7 @@ meta_xls = pd.DataFrame([{
     "Cap_Visual_On": cap_on,
     "Cap_Visual_Max": cap_val,
     "Incluir_Obj_0": show_obj0,
+    "Incluir_Garantias": include_warranties,
     "Hoja_Dias_Habiles": (DIAS_SHEET_FOUND if DIAS_SHEET_FOUND is not None else "NO_ENCONTRADA"),
     "Hoja_Resumen_del_Mes": (RESUMEN_SHEET_FOUND if RESUMEN_SHEET_FOUND is not None else "NO_ENCONTRADA"),
     "Hoja_Abiertas": (ABIERTAS_SHEET_FOUND if ABIERTAS_SHEET_FOUND is not None else "NO_ENCONTRADA"),
