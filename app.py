@@ -1593,7 +1593,7 @@ def render_tab_cierre_gap():
     suc_pend = gap[gap["Falta"] > 0]["Sucursal"].nunique()
 
     st.markdown("### 📌 Foto ejecutiva del cierre")
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.markdown(card_html_base("Cumplimiento total", pct_str(total_cumpl), "Real / Objetivo acumulado"), unsafe_allow_html=True)
     with k2:
@@ -1964,7 +1964,7 @@ def render_direction_tab():
     ctx = build_direction_context()
     status = _status_from_cumpl(ctx["total_c"])
 
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         st.metric("Facturación acumulada", money_str(ctx["total_real"]), delta=_metric_delta_pts(ctx["total_c"]))
     with k2:
