@@ -1887,70 +1887,23 @@ def direction_evolution_figure(data, axis_range, weekly_color):
     periods = data["Mes"].apply(build_month_label) + " - S" + data["Semana_Mes"].astype(str)
     fig = go.Figure()
     for label, value_col, real_col, obj_col, color, dash, position in [
-        ("Semanal", "Cumpl", "Real", "Obj", weekly_color, "dot", "bottom center"),
-        ("Acumulado del mes", "Cumpl_Acum", "Real_Acum", "Obj_Acum", "#b45309", "solid", "top center"),
+        ("Semanal", "Cumpl", "Real", "Obj", weekly_color, "solid", "top center"),
+        ("Acumulado del mes", "Cumpl_Acum", "Real_Acum", "Obj_Acum", "#b45309", "dash", "bottom center"),
     ]:
         values = data[value_col]
         visual = values.clip(upper=cap_val) if cap_on else values
-        last = values.last_valid_index()
-        labels = [pct_str(v) if i == last else "" for i, v in values.items()]
         fig.add_trace(go.Scatter(
             x=periods, y=visual, name=label, mode="lines+markers+text",
-            line=dict(color=color, width=4 if value_col == "Cumpl_Acum" else 2, dash=dash), text=labels,
+            line=dict(color=color, width=3, dash=dash), text=values.apply(pct_str),
             textposition=position, textfont=dict(size=11), connectgaps=False,
             customdata=data[[value_col, real_col, obj_col]].to_numpy(),
             hovertemplate="%{x}<br>" + label + ": %{customdata[0]:.1%}<br>Real: $%{customdata[1]:,.0f}<br>Objetivo: $%{customdata[2]:,.0f}<extra></extra>",
         ))
-    fig.add_hline(y=1, line_color="#64748b", line_dash="dash", line_width=1, annotation_text="Objetivo 100%", annotation_position="top left")
     fig.update_yaxes(tickformat=".0%", range=axis_range, title_text="Cumplimiento")
     fig.update_xaxes(title_text="Semana", categoryorder="array", categoryarray=periods.tolist())
-    fig.update_layout(height=370, hovermode="x unified", margin=dict(l=10, r=10, t=30, b=15),
+    fig.update_layout(height=370, margin=dict(l=10, r=10, t=30, b=15),
                       legend=dict(orientation="h", y=1.12, x=0))
     return fig
-
-
-def direction_branch_gaps(ctx):
-    frames = [
-        apply_obj0_filter(ctx[key], show_obj0).assign(Bloque=label)
-        for key, label in [("d_srv", "Servicios"), ("d_rep", "Repuestos")]
-    ]
-    data = pd.concat(frames, ignore_index=True)
-    data["Brecha"] = data["Obj_val"] - data["Real_val"]
-    ranking = data.groupby("Sucursal", as_index=False).agg(
-        Real=("Real_val", "sum"), Objetivo=("Obj_val", "sum"), Brecha=("Brecha", "sum")
-    )
-    for label in ["Servicios", "Repuestos"]:
-        gaps = data[data["Bloque"] == label].groupby("Sucursal")["Brecha"].sum()
-        ranking[label] = ranking["Sucursal"].map(gaps)
-    ranking["Cumplimiento"] = ranking.apply(lambda row: safe_ratio(row["Real"], row["Objetivo"]), axis=1)
-    return ranking.sort_values(["Brecha", "Sucursal"], ascending=[False, True])
-
-
-def render_direction_branch_gaps(ctx):
-    st.markdown("### Dónde actuar: brecha por sucursal")
-    ranking = direction_branch_gaps(ctx)
-    if ranking.empty:
-        st.info("No hay datos económicos para los filtros seleccionados.")
-        return
-    pending = ranking[ranking["Brecha"] > 0]
-    if not pending.empty:
-        first = pending.iloc[0]
-        blocks = first[["Servicios", "Repuestos"]].dropna()
-        st.info(f"Primer foco: {first['Sucursal']}, con {money_str(first['Brecha'])} por recuperar. La mayor brecha está en {blocks.idxmax()}.")
-    else:
-        st.success("Ninguna sucursal de la selección tiene una brecha pendiente al corte.")
-    st.caption("Brecha = objetivo menos facturación. Un valor positivo indica lo que falta; uno negativo, cuánto se superó el objetivo.")
-    st.dataframe(
-        ranking, hide_index=True, use_container_width=True,
-        column_order=["Sucursal", "Brecha", "Cumplimiento", "Servicios", "Repuestos", "Real", "Objetivo"],
-        column_config={
-            **{c: st.column_config.NumberColumn(label, format="$ %.0f") for c, label in [
-                ("Brecha", "Brecha total"), ("Servicios", "Brecha Servicios"), ("Repuestos", "Brecha Repuestos"),
-                ("Real", "Facturación"), ("Objetivo", "Objetivo")
-            ]},
-            "Cumplimiento": st.column_config.NumberColumn("Cumplimiento", format="percent"),
-        },
-    )
 
 
 def render_direction_tab():
@@ -1964,7 +1917,7 @@ def render_direction_tab():
     ctx = build_direction_context()
     status = _status_from_cumpl(ctx["total_c"])
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Facturación acumulada", money_str(ctx["total_real"]), delta=_metric_delta_pts(ctx["total_c"]))
     with k2:
@@ -1972,10 +1925,6 @@ def render_direction_tab():
     with k3:
         st.metric("Cumplimiento", pct_str(ctx["total_c"]), delta=_metric_delta_pts(ctx["total_c"]))
     with k4:
-        gap = ctx["total_obj"] - ctx["total_real"]
-        label = "Falta para el objetivo" if gap >= 0 else "Por encima del objetivo"
-        st.metric(label, money_str(abs(gap)) if ctx["total_obj"] > 0 else "—")
-    with k5:
         st.metric("Proyección cierre", money_str(ctx["total_proy"]))
 
     if status["color"] == "green":
@@ -1986,59 +1935,6 @@ def render_direction_tab():
         st.error(f"{status['emoji']} {status['label']} — {status['msg']}")
     else:
         st.info(f"{status['emoji']} {status['label']} — {status['msg']}")
-
-    st.markdown("### 📊 Evolución del cumplimiento económico")
-    total_month_dir = pd.concat([
-        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS") & (df_month["Categoria_KPI"].isin(rep_sel))],
-        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS") & (df_month["Categoria_KPI"].isin(srv_sel))]
-    ], ignore_index=True)
-    # Evolución consolidada y por sucursal: solo importes económicos y aperturas P&L seleccionadas.
-    evolucion = apply_obj0_filter(total_month_dir.copy(), show_obj0)
-    # Se acumulan todas las semanas anteriores del mes, aun si no están visibles.
-    total_members = ["Salta", "Salta Capital", "Jujuy", "Taller Móvil", "Tartagal", "Lajitas"]
-    total_source = df[
-        df["Mes"].isin(meses_sel)
-        & (df["Tipo_KPI"] == "$")
-        & (
-            ((df["KPI"].str.upper() == "REPUESTOS") & df["Categoria_KPI"].isin(rep_sel))
-            | ((df["KPI"].str.upper() == "SERVICIOS") & df["Categoria_KPI"].isin(srv_sel))
-        )
-    ].copy()
-    total_source = apply_obj0_filter(total_source, show_obj0)
-    series = build_weekly_and_cumulative(total_source, total_members, semanas_sel)
-    regional_groups = [
-        ("Posventa Centro", ["Salta", "Salta Capital", "Jujuy", "Taller Móvil"], "centro", "#16a34a"),
-        ("Posventa Interior", ["Tartagal", "Lajitas"], "interior", "#2563eb"),
-    ]
-    regional_data = [
-        build_weekly_and_cumulative(evolucion, members, semanas_sel)
-        for _, members, _, _ in regional_groups
-    ]
-    scale_values = pd.concat([data[col] for data in [series] + regional_data for col in ["Cumpl", "Cumpl_Acum"]], ignore_index=True)
-    if cap_on:
-        scale_values = scale_values.clip(upper=cap_val)
-    direction_axis_range = cumplimiento_axis_range(scale_values)
-    if series[["Cumpl", "Cumpl_Acum"]].dropna(how="all").empty:
-        st.info("No hay objetivos económicos válidos para calcular el cumplimiento.")
-    else:
-        fig_dir = direction_evolution_figure(series, direction_axis_range, "#16a34a")
-        st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
-        st.caption("Total Posventa = Centro + Interior completos. Semanal: real / objetivo de cada semana. Acumulado: suma del real / suma del objetivo desde la semana 1 del mes hasta cada punto.")
-
-    regional_columns = st.columns(2)
-    for column, (title, members, chart_key, color), regional in zip(regional_columns, regional_groups, regional_data):
-        with column:
-            st.markdown(f"#### {title}")
-            st.caption("Salta Capital · Jujuy · Taller Móvil" if chart_key == "centro" else "Tartagal · Lajitas")
-            if regional[["Cumpl", "Cumpl_Acum"]].dropna(how="all").empty:
-                st.info("Sin datos con objetivos válidos para este grupo y los filtros seleccionados.")
-                continue
-            fig_regional = direction_evolution_figure(regional, direction_axis_range, color)
-            st.plotly_chart(fig_regional, use_container_width=True, key=f"direccion_posventa_{chart_key}")
-            st.caption("Semanal y acumulado del mes. Respeta las sucursales seleccionadas. El acumulado incluye semanas anteriores aunque no estén visibles; reinicia al cambiar de mes.")
-
-    st.markdown("---")
-    render_direction_branch_gaps(ctx)
 
     st.markdown("### 🧠 Resumen Ejecutivo")
     st.info(build_direction_narrative(ctx))
@@ -2142,6 +2038,56 @@ def render_direction_tab():
         ), unsafe_allow_html=True)
 
     st.markdown("---")
+    st.markdown("### 📊 Evolución semanal del cumplimiento económico")
+    total_month_dir = pd.concat([
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "REPUESTOS") & (df_month["Categoria_KPI"].isin(rep_sel))],
+        df_month[(df_month["Tipo_KPI"] == "$") & (df_month["KPI"].str.upper() == "SERVICIOS") & (df_month["Categoria_KPI"].isin(srv_sel))]
+    ], ignore_index=True)
+    # Evolución consolidada y por sucursal: solo importes económicos y aperturas P&L seleccionadas.
+    evolucion = apply_obj0_filter(total_month_dir.copy(), show_obj0)
+    # Se acumulan todas las semanas anteriores del mes, aun si no están visibles.
+    total_members = ["Salta", "Salta Capital", "Jujuy", "Taller Móvil", "Tartagal", "Lajitas"]
+    total_source = df[
+        df["Mes"].isin(meses_sel)
+        & (df["Tipo_KPI"] == "$")
+        & (
+            ((df["KPI"].str.upper() == "REPUESTOS") & df["Categoria_KPI"].isin(rep_sel))
+            | ((df["KPI"].str.upper() == "SERVICIOS") & df["Categoria_KPI"].isin(srv_sel))
+        )
+    ].copy()
+    total_source = apply_obj0_filter(total_source, show_obj0)
+    series = build_weekly_and_cumulative(total_source, total_members, semanas_sel)
+    regional_groups = [
+        ("Posventa Centro", ["Salta", "Salta Capital", "Jujuy", "Taller Móvil"], "centro", "#16a34a"),
+        ("Posventa Interior", ["Tartagal", "Lajitas"], "interior", "#2563eb"),
+    ]
+    regional_data = [
+        build_weekly_and_cumulative(evolucion, members, semanas_sel)
+        for _, members, _, _ in regional_groups
+    ]
+    scale_values = pd.concat([data[col] for data in [series] + regional_data for col in ["Cumpl", "Cumpl_Acum"]], ignore_index=True)
+    if cap_on:
+        scale_values = scale_values.clip(upper=cap_val)
+    direction_axis_range = cumplimiento_axis_range(scale_values)
+    if series[["Cumpl", "Cumpl_Acum"]].dropna(how="all").empty:
+        st.info("No hay objetivos económicos válidos para calcular el cumplimiento.")
+    else:
+        fig_dir = direction_evolution_figure(series, direction_axis_range, "#16a34a")
+        st.plotly_chart(fig_dir, use_container_width=True, key="spark_direccion_sucursales")
+        st.caption("Total Posventa = Centro + Interior completos. Semanal: real / objetivo de cada semana. Acumulado: suma del real / suma del objetivo desde la semana 1 del mes hasta cada punto.")
+
+    regional_columns = st.columns(2)
+    for column, (title, members, chart_key, color), regional in zip(regional_columns, regional_groups, regional_data):
+        with column:
+            st.markdown(f"#### {title}")
+            st.caption("Salta Capital · Jujuy · Taller Móvil" if chart_key == "centro" else "Tartagal · Lajitas")
+            if regional[["Cumpl", "Cumpl_Acum"]].dropna(how="all").empty:
+                st.info("Sin datos con objetivos válidos para este grupo y los filtros seleccionados.")
+                continue
+            fig_regional = direction_evolution_figure(regional, direction_axis_range, color)
+            st.plotly_chart(fig_regional, use_container_width=True, key=f"direccion_posventa_{chart_key}")
+            st.caption("Semanal y acumulado del mes. Respeta las sucursales seleccionadas. El acumulado incluye semanas anteriores aunque no estén visibles; reinicia al cambiar de mes.")
+
     st.markdown("---")
     st.markdown("### 🚦 Matriz Dirección — Sucursal x bloque")
     render_direction_heatmap(ctx)
